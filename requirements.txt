@@ -1,0 +1,28 @@
+################################################################################
+# Downloader de Músicas - Dependências Python
+#
+# Instale com:
+#   python -m pip install -r requirements.txt
+#
+# Estas dependências são instaladas e atualizadas automaticamente pelos
+# arquivos "Baixar Música.bat" (primeira execução) e "Atualizar.bat"
+# (atualização posterior).
+################################################################################
+
+# Motor de extração e download, responsável por suportar o YouTube,
+# YouTube Music, SoundCloud, Bandcamp, Vimeo, Mixcloud, Audiomack e centenas
+# de outros sites de música e vídeo.
+yt-dlp>=2024.12.6
+
+# Biblioteca utilizada para ler e escrever metadados (tags) em arquivos de
+# áudio MP3, incluindo título, artista, álbum, faixa, disco, ano, gênero,
+# compositor, comentários e capa (APIC).
+mutagen>=1.47.0
+
+# Cliente HTTP utilizado para baixar as miniaturas/capas em alta resolução
+# das playlists e álbuns (capa.jpg).
+requests>=2.32.0
+
+# Biblioteca utilizada para colorir as mensagens exibidas no terminal do
+# Windows (sucesso, aviso, erro, destaque), tornando a leitura mais clara.
+colorama>=0.4.6
