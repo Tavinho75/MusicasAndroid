@@ -1,6 +1,11 @@
 package com.example.downloaderandroid
 
 import android.os.Bundle
+import android.util.Log
+import com.example.downloaderandroid.core.YtDlpExtractorEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,9 +19,16 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 
 class MainActivity : ComponentActivity() {
+    private val phase1Scope = CoroutineScope(Dispatchers.Default)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val extractor = YtDlpExtractorEngine(applicationContext)
+        phase1Scope.launch {
+            val result = extractor.probe("https://example.com/")
+            Log.i("Phase1Probe", result.message)
+        }
         setContent {
             DownloaderAndroidTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
