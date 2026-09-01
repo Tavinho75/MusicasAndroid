@@ -2,6 +2,7 @@ package com.example.downloaderandroid
 
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -9,13 +10,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,14 +34,17 @@ import androidx.compose.ui.unit.dp
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.core.ExtractorProbeResult
+import com.example.downloaderandroid.core.YtDlpDownloadEngine
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
 import com.example.downloaderandroid.state.NativeDownloadTaskRepository
 import com.example.downloaderandroid.state.DownloadTaskState
 import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
@@ -46,24 +59,78 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DownloaderAndroidTheme {
-                var status by mutableStateOf("Executando testes da FASE 1.1…")
+                var preflightStatus by mutableStateOf("Executando testes da FASE 1.1…")
+                var urlInput by mutableStateOf("")
+                var phase3Status by mutableStateOf("FASE 3 pronta para testar um download real.")
+                var isDownloading by mutableStateOf(false)
+                val scope = rememberCoroutineScope()
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(innerPadding)
-                            .padding(24.dp),
+                            .padding(24.dp)
+                            .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        Text("FASE 1.1 + FASE 2 + FASE 3", textAlign = TextAlign.Center)
+
                         Text(
-                            text = "FASE 1.1 + FASE 2 — Base nativa",
+                            text = preflightStatus,
+                            modifier = Modifier.padding(top = 16.dp),
                             textAlign = TextAlign.Center
                         )
 
+                        Spacer(modifier = Modifier.height(32.dp))
+
                         Text(
-                            text = status,
+                            text = "FASE 3 — Download real de áudio",
+                            textAlign = TextAlign.Center
+                        )
+
+                        OutlinedTextField(
+                            value = urlInput,
+                            onValueChange = { urlInput = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 16.dp),
+                            label = { Text("Cole o link de uma música ou vídeo") },
+                            singleLine = true,
+                            enabled = !isDownloading
+                        )
+
+                        Button(
+                            onClick = {
+                                val requestedUrl = urlInput.trim()
+
+                                if (requestedUrl.isBlank()) {
+                                    phase3Status = "❌ FASE 3: cole uma URL antes de iniciar."
+                                    return@Button
+                                }
+
+                                scope.launch {
+                                    isDownloading = true
+                                    phase3Status = "🔄 FASE 3: preparando download…"
+                                    phase3Status = runPhase3Download(requestedUrl)
+                                    isDownloading = false
+                                }
+                            },
+                            modifier = Modifier.padding(top = 12.dp),
+                            enabled = !isDownloading
+                        ) {
+                            Text(if (isDownloading) "Baixando…" else "Testar download")
+                        }
+
+                        if (isDownloading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.padding(top = 16.dp)
+                            )
+                        }
+
+                        Text(
+                            text = phase3Status,
                             modifier = Modifier.padding(top = 16.dp),
                             textAlign = TextAlign.Center
                         )
@@ -73,15 +140,9 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     val phase11 = runPhase11Tests()
 
-                    status = if (phase11.startsWith("❌")) {
+                    preflightStatus = if (phase11.startsWith("❌")) {
                         phase11
                     } else {
-                        /*
-                         * A validação do ciclo nativo usa repository.clear().
-                         * Portanto, em uma abertura posterior ela não pode rodar
-                         * antes de verificar o checkpoint de reinício, ou apagaria
-                         * justamente o estado que precisamos restaurar.
-                         */
                         val restartRepository =
                             NativeDownloadTaskRepository(applicationContext)
 
@@ -103,6 +164,101 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * FASE 3: executa um download real e conecta o resultado ao ciclo de vida
+     * nativo da tarefa. Nesta primeira etapa o arquivo é mantido no diretório
+     * externo privado do aplicativo; a conversão final para MP3 será ligada
+     * ao MediaProcessor nas próximas fases.
+     */
+    private suspend fun runPhase3Download(url: String): String {
+        val parsed = runCatching { Uri.parse(url) }.getOrNull()
+        val scheme = parsed?.scheme?.lowercase()
+
+        if (scheme != "http" && scheme != "https") {
+            return "❌ FASE 3: informe uma URL HTTP ou HTTPS válida."
+        }
+
+        val repository =
+            NativeDownloadTaskRepository(applicationContext)
+
+        return try {
+            repository.clear()
+
+            val taskId = "phase3-" + UUID.randomUUID().toString()
+
+            repository.create(
+                DownloadTaskState(
+                    id = taskId,
+                    url = url,
+                    status = DownloadTaskStatus.DRAFT,
+                    title = "Download real de teste",
+                    detail = "URL recebida pelo aplicativo."
+                )
+            )
+
+            repository.transition(
+                target = DownloadTaskStatus.ANALYZING,
+                detail = "Preparando yt-dlp."
+            )
+
+            repository.transition(
+                target = DownloadTaskStatus.READY,
+                detail = "Motor pronto para iniciar o download."
+            )
+
+            repository.transition(
+                target = DownloadTaskStatus.DOWNLOADING,
+                detail = "yt-dlp baixando o melhor áudio disponível."
+            )
+
+            val result =
+                YtDlpDownloadEngine(applicationContext)
+                    .downloadBestAudio(url)
+
+            if (result.success) {
+                repository.transition(
+                    target = DownloadTaskStatus.PROCESSING,
+                    detail = "Download concluído; validando resultado."
+                )
+
+                repository.transition(
+                    target = DownloadTaskStatus.COMPLETED,
+                    detail = result.message
+                )
+
+                "✅ FASE 3: download real concluído\n\n" +
+                    result.message + "\n\n" +
+                    "Pasta temporária desta fase:\n" +
+                    (result.outputDirectory ?: "indisponível")
+            } else {
+                repository.transition(
+                    target = DownloadTaskStatus.FAILED,
+                    detail = result.message
+                )
+
+                "❌ FASE 3: download falhou\n\n" +
+                    result.message + "\n\n" +
+                    "Código do yt-dlp: ${result.exitCode}"
+            }
+        } catch (error: Throwable) {
+            Log.e("Phase3Download", "Falha no download real", error)
+
+            runCatching {
+                val current = repository.current()
+
+                if (current?.status == DownloadTaskStatus.DOWNLOADING) {
+                    repository.transition(
+                        target = DownloadTaskStatus.FAILED,
+                        detail = error.message ?: "Falha inesperada."
+                    )
+                }
+            }
+
+            "❌ FASE 3: ${error.javaClass.simpleName}: " +
+                (error.message ?: "sem mensagem")
         }
     }
 
