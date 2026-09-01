@@ -25,9 +25,8 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.core.ExtractorProbeResult
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
-import com.example.downloaderandroid.state.DownloadStateStore
+import com.example.downloaderandroid.state.NativeDownloadTaskRepository
 import com.example.downloaderandroid.state.DownloadTaskState
-import com.example.downloaderandroid.state.DownloadTaskStateMachine
 import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.Dispatchers
@@ -120,77 +119,112 @@ class MainActivity : ComponentActivity() {
      * da aplicação pode permanecer na camada Android e sobreviver a uma
      * leitura posterior do SharedPreferences.
      */
+    /**
+     * Validação incremental da FASE 2.
+     *
+     * Ainda não existe fila, Foreground Service ou download real. O teste
+     * valida a fronteira de repositório nativa e todo o ciclo permitido de
+     * uma única tarefa, incluindo persistência após cada mudança de estado.
+     */
     private fun runPhase2NativeStateValidation(): String {
-        val store = DownloadStateStore(applicationContext)
+        val repository = NativeDownloadTaskRepository(applicationContext)
 
         return try {
+            repository.clear()
+
             val draft = DownloadTaskState(
-                id = "phase2-native-state-validation",
+                id = "phase2-native-lifecycle-validation",
                 url = "https://example.com/",
                 status = DownloadTaskStatus.DRAFT,
-                title = "Validação de estado nativo",
-                detail = "Tarefa criada pela camada Android.",
+                title = "Validação de ciclo nativo",
+                detail = "Tarefa criada pelo repositório Android.",
                 updatedAtEpochMillis = 1_000L
             )
 
-            store.save(draft)
-            val draftRestored = store.load() == draft
+            repository.create(draft)
+            val draftRestored = repository.current() == draft
 
-            val analyzing = DownloadTaskStateMachine.transition(
-                state = draft,
+            val analyzing = repository.transition(
                 target = DownloadTaskStatus.ANALYZING,
-                detail = "Transição DRAFT -> ANALYZING validada.",
+                detail = "DRAFT -> ANALYZING",
                 updatedAtEpochMillis = 2_000L
             )
-            store.save(analyzing)
-            val analyzingRestored = store.load() == analyzing
+            val analyzingRestored = repository.current() == analyzing
 
-            val ready = DownloadTaskStateMachine.transition(
-                state = analyzing,
+            val ready = repository.transition(
                 target = DownloadTaskStatus.READY,
-                detail = "Transição ANALYZING -> READY validada.",
+                detail = "ANALYZING -> READY",
                 updatedAtEpochMillis = 3_000L
             )
-            store.save(ready)
-            val readyRestored = store.load() == ready
+            val readyRestored = repository.current() == ready
 
-            val invalidTransitionRejected = try {
-                DownloadTaskStateMachine.transition(
-                    state = ready,
-                    target = DownloadTaskStatus.COMPLETED,
-                    updatedAtEpochMillis = 4_000L
+            val downloading = repository.transition(
+                target = DownloadTaskStatus.DOWNLOADING,
+                detail = "READY -> DOWNLOADING",
+                updatedAtEpochMillis = 4_000L
+            )
+            val downloadingRestored = repository.current() == downloading
+
+            val processing = repository.transition(
+                target = DownloadTaskStatus.PROCESSING,
+                detail = "DOWNLOADING -> PROCESSING",
+                updatedAtEpochMillis = 5_000L
+            )
+            val processingRestored = repository.current() == processing
+
+            val completed = repository.transition(
+                target = DownloadTaskStatus.COMPLETED,
+                detail = "PROCESSING -> COMPLETED",
+                updatedAtEpochMillis = 6_000L
+            )
+            val completedRestored = repository.current() == completed
+
+            val terminalTransitionRejected = try {
+                repository.transition(
+                    target = DownloadTaskStatus.DOWNLOADING,
+                    updatedAtEpochMillis = 7_000L
                 )
                 false
             } catch (_: IllegalStateException) {
                 true
             }
 
-            store.clear()
-            val clearedCorrectly = store.load() == null
+            repository.clear()
+            val clearedCorrectly = repository.current() == null
 
             Log.i(
                 "Phase2State",
-                "draftRestored=$draftRestored; " +
-                    "analyzingRestored=$analyzingRestored; " +
-                    "readyRestored=$readyRestored; " +
-                    "invalidTransitionRejected=$invalidTransitionRejected; " +
-                    "clearedCorrectly=$clearedCorrectly"
+                "draft=$draftRestored; analyzing=$analyzingRestored; " +
+                    "ready=$readyRestored; downloading=$downloadingRestored; " +
+                    "processing=$processingRestored; completed=$completedRestored; " +
+                    "terminalRejected=$terminalTransitionRejected; " +
+                    "cleared=$clearedCorrectly"
             )
 
             if (
                 draftRestored &&
                 analyzingRestored &&
                 readyRestored &&
-                invalidTransitionRejected &&
+                downloadingRestored &&
+                processingRestored &&
+                completedRestored &&
+                terminalTransitionRejected &&
                 clearedCorrectly
             ) {
-                "✅ FASE 2: persistência + transições nativas OK"
+                "✅ FASE 2: ciclo nativo completo + persistência OK"
             } else {
-                "❌ FASE 2: falha na validação de estado/transição nativa"
+                "❌ FASE 2: falha na validação do ciclo nativo"
             }
         } catch (error: Throwable) {
-            Log.e("Phase2State", "Falha na validação do estado persistente", error)
+            Log.e("Phase2State", "Falha na validação do ciclo nativo", error)
             "❌ FASE 2: ${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
+        } finally {
+            try {
+                repository.clear()
+            } catch (_: Throwable) {
+                // O resultado principal já foi registrado; a limpeza não deve
+                // mascarar uma falha anterior.
+            }
         }
     }
 
