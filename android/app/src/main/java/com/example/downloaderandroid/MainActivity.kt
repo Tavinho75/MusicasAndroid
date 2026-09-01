@@ -35,6 +35,11 @@ import java.io.File
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private const val PHASE2_RESTART_CHECKPOINT_ID =
+            "phase2-restart-persistence-checkpoint"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -67,10 +72,34 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(Unit) {
                     val phase11 = runPhase11Tests()
+
                     status = if (phase11.startsWith("❌")) {
                         phase11
                     } else {
-                        phase11 + "\n\n" + runPhase2NativeStateValidation() + "\n\n" + runPhase2RestartPersistenceValidation()
+                        /*
+                         * A validação do ciclo nativo usa repository.clear().
+                         * Portanto, em uma abertura posterior ela não pode rodar
+                         * antes de verificar o checkpoint de reinício, ou apagaria
+                         * justamente o estado que precisamos restaurar.
+                         */
+                        val restartRepository =
+                            NativeDownloadTaskRepository(applicationContext)
+
+                        val hasRestartCheckpoint =
+                            restartRepository.current()?.id ==
+                                PHASE2_RESTART_CHECKPOINT_ID
+
+                        if (hasRestartCheckpoint) {
+                            phase11 + "\n\n" +
+                                runPhase2RestartPersistenceValidation()
+                        } else {
+                            val nativeState =
+                                runPhase2NativeStateValidation()
+
+                            phase11 + "\n\n" +
+                                nativeState + "\n\n" +
+                                runPhase2RestartPersistenceValidation()
+                        }
                     }
                 }
             }
@@ -239,7 +268,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun runPhase2RestartPersistenceValidation(): String {
         val repository = NativeDownloadTaskRepository(applicationContext)
-        val checkpointId = "phase2-restart-persistence-checkpoint"
+        val checkpointId = PHASE2_RESTART_CHECKPOINT_ID
 
         return try {
             val existing = repository.current()
