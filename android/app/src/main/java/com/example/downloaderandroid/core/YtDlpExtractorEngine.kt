@@ -1,18 +1,20 @@
 package com.example.downloaderandroid.core
 
 import android.content.Context
+import dev.ffmpegkit_maintained.ytdlp.YtDlp
 import dev.ffmpegkit_maintained.ytdlp.YtDlpException
-import dev.ffmpegkit_maintained.ytdlp.compat.YoutubeDL
 
 class YtDlpExtractorEngine(
     context: Context
 ) : ExtractorEngine {
 
+    private val appContext = context.applicationContext
+
     private val initialized: Boolean
 
     init {
         initialized = try {
-            YoutubeDL.getInstance().init(context.applicationContext)
+            YtDlp.init(appContext)
             true
         } catch (error: YtDlpException) {
             false
