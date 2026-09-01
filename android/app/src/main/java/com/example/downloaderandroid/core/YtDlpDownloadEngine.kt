@@ -9,15 +9,17 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Primeira integração real de download.
- *
- * Esta etapa baixa o melhor áudio disponível para o armazenamento privado do
- * aplicativo. A conversão final para MP3 e a organização definitiva serão
- * conectadas nas próximas fases ao MediaProcessor/FFmpeg.
+ * Integração de download com tentativas de compatibilidade para fontes que
+ * exigem um cliente específico do extractor, como o YouTube.
  */
 class YtDlpDownloadEngine(context: Context) {
 
     private val appContext = context.applicationContext
+
+    private data class DownloadAttempt(
+        val label: String,
+        val extractorArgs: String?
+    )
 
     suspend fun downloadBestAudio(url: String): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
@@ -35,34 +37,76 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
-                val outputTemplate = File(
-                    outputDirectory,
-                    "%(title)s.%(ext)s"
-                ).absolutePath
-
-                val request = YtDlpRequest(url)
-                    .setOutputTemplate(outputTemplate)
-                    .addOption("-f", "bestaudio/best")
-                    .addOption("--no-playlist")
-
-                val response = YtDlp.execute(request, null)
-
-                DownloadExecutionResult(
-                    success = response.isSuccess,
-                    exitCode = response.exitCode,
-                    outputDirectory = outputDirectory.absolutePath,
-                    message = if (response.isSuccess) {
-                        "Áudio baixado com sucesso."
-                    } else {
-                        "yt-dlp terminou com código ${response.exitCode}."
-                    }
+                val attempts = listOf(
+                    DownloadAttempt(
+                        label = "padrão",
+                        extractorArgs = null
+                    ),
+                    DownloadAttempt(
+                        label = "cliente Android",
+                        extractorArgs = "youtube:player_client=android"
+                    ),
+                    DownloadAttempt(
+                        label = "cliente web",
+                        extractorArgs = "youtube:player_client=web"
+                    )
                 )
-            } catch (error: YtDlpException) {
+
+                val errors = mutableListOf<String>()
+
+                for ((index, attempt) in attempts.withIndex()) {
+                    val outputTemplate = File(
+                        outputDirectory,
+                        "%(title)s.%(ext)s"
+                    ).absolutePath
+
+                    val request = YtDlpRequest(url)
+                        .setOutputTemplate(outputTemplate)
+                        .addOption("-f", "bestaudio/best")
+                        .addOption("--no-playlist")
+                        .addOption("--no-part")
+                        .addOption("--force-overwrites")
+
+                    attempt.extractorArgs?.let { extractorArgs ->
+                        request.addOption("--extractor-args", extractorArgs)
+                    }
+
+                    try {
+                        val response = YtDlp.execute(request, null)
+
+                        if (response.isSuccess) {
+                            return@withContext DownloadExecutionResult(
+                                success = true,
+                                exitCode = response.exitCode,
+                                outputDirectory = outputDirectory.absolutePath,
+                                message = if (index == 0) {
+                                    "Áudio baixado com sucesso."
+                                } else {
+                                    "Áudio baixado com sucesso usando ${attempt.label}."
+                                }
+                            )
+                        }
+
+                        errors += "${attempt.label}: código ${response.exitCode}"
+                    } catch (error: YtDlpException) {
+                        errors += "${attempt.label}: ${error.message ?: "falha sem mensagem"}"
+                    } catch (error: Throwable) {
+                        errors += "${attempt.label}: ${error.javaClass.simpleName}: " +
+                            (error.message ?: "sem mensagem")
+                    }
+                }
+
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
-                    outputDirectory = null,
-                    message = error.message ?: "Falha ao executar yt-dlp."
+                    outputDirectory = outputDirectory.absolutePath,
+                    message = buildString {
+                        append("Nenhuma tentativa conseguiu baixar o áudio.")
+                        if (errors.isNotEmpty()) {
+                            append("\n\nTentativas:\n")
+                            append(errors.joinToString("\n"))
+                        }
+                    }
                 )
             } catch (error: Throwable) {
                 DownloadExecutionResult(
