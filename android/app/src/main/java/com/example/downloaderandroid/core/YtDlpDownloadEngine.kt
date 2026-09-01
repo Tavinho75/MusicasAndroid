@@ -69,7 +69,7 @@ class YtDlpDownloadEngine(context: Context) {
                     success = false,
                     exitCode = -1,
                     outputDirectory = null,
-                    message = "${error.javaClass.simpleName}: ${error.message ?: \"sem mensagem\"}"
+                    message = "${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
                 )
             }
         }
