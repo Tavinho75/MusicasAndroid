@@ -55,7 +55,12 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
     implementation("dev.ffmpegkit-maintained:yt-dlp-android:2.0.2")
+
+    // FFmpegKit 8.1.7 uses smart-exception at runtime. Declaring it explicitly
+    // prevents the required Java class from being omitted from the APK.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7")
+    implementation("com.arthenica:smart-exception-java:0.2.1")
+
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     testImplementation(libs.junit)
