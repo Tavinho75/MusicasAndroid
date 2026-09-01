@@ -60,17 +60,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
-                    val result = withContext(Dispatchers.Default) {
-                        runPhase11Tests()
-                    }
-
-                    status = result
+                    status = runPhase11Tests()
                 }
             }
         }
     }
 
-    private fun runPhase11Tests(): String {
+    private suspend fun runPhase11Tests(): String {
         val extractorResult: ExtractorProbeResult = try {
             val extractor = YtDlpExtractorEngine(applicationContext)
             extractor.probe("https://example.com/")
@@ -94,11 +90,16 @@ class MainActivity : ComponentActivity() {
         Log.i("Phase1FFmpeg", "Iniciando FFmpegKit.execute(-hide_banner -encoders)")
 
         return try {
-            val session = FFmpegKit.execute("-hide_banner -encoders")
+            val ffmpegResult = withContext(Dispatchers.Default) {
+                val session = FFmpegKit.execute("-hide_banner -encoders")
+                val returnCode = session.returnCode
+                val output = session.output ?: ""
+                Triple(returnCode, output, ReturnCode.isSuccess(returnCode))
+            }
 
-            val returnCode = session.returnCode
-            val output = session.output ?: ""
-            val success = ReturnCode.isSuccess(returnCode)
+            val returnCode = ffmpegResult.first
+            val output = ffmpegResult.second
+            val success = ffmpegResult.third
             val hasMp3Lame = output.contains("libmp3lame", ignoreCase = true)
 
             Log.i("Phase1FFmpeg", "FFmpeg finalizado. ReturnCode=$returnCode")
