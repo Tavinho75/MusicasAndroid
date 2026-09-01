@@ -18,6 +18,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.CoroutineScope
@@ -35,7 +37,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DownloaderAndroidTheme {
-                var status by mutableStateOf("Inicializando teste do yt-dlp…")
+                var status by mutableStateOf("Executando testes da FASE 1.1…")
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Column(
@@ -47,7 +49,7 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "FASE 1.1 — Teste do ExtractorEngine",
+                            text = "FASE 1.1 — ExtractorEngine + FFmpeg",
                             textAlign = TextAlign.Center
                         )
 
@@ -60,7 +62,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 phase1Scope.launch {
-                    val result = try {
+                    val extractorResult = try {
                         val extractor = YtDlpExtractorEngine(applicationContext)
                         extractor.probe("https://example.com/")
                     } catch (error: Exception) {
@@ -72,15 +74,50 @@ class MainActivity : ComponentActivity() {
 
                     Log.i(
                         "Phase1Probe",
-                        "initialized=${result.initialized}; message=${result.message}"
+                        "initialized=${extractorResult.initialized}; message=${extractorResult.message}"
                     )
 
                     withContext(Dispatchers.Main) {
-                        status = if (result.initialized) {
-                            "✅ ${result.message}"
+                        status = if (extractorResult.initialized) {
+                            "✅ ExtractorEngine OK\n\nExecutando teste do FFmpeg…"
                         } else {
-                            "❌ ${result.message}"
+                            "❌ ExtractorEngine falhou\n\n${extractorResult.message}"
                         }
+                    }
+
+                    val ffmpegSession = try {
+                        FFmpegKit.execute("-hide_banner -encoders")
+                    } catch (error: Exception) {
+                        Log.e("Phase1FFmpeg", "Falha ao iniciar FFmpeg", error)
+                        null
+                    }
+
+                    val finalMessage = if (ffmpegSession == null) {
+                        "❌ FFmpeg não conseguiu iniciar. Veja o Logcat."
+                    } else {
+                        val returnCode = ffmpegSession.returnCode
+                        val output = ffmpegSession.output ?: ""
+                        val success = ReturnCode.isSuccess(returnCode)
+                        val hasMp3Lame = output.contains("libmp3lame", ignoreCase = true)
+
+                        Log.i("Phase1FFmpeg", "ReturnCode=$returnCode")
+                        Log.i("Phase1FFmpeg", "libmp3lame=$hasMp3Lame")
+                        Log.i("Phase1FFmpegOutput", output)
+
+                        when {
+                            !success ->
+                                "❌ FFmpeg executou, mas retornou erro.\n\nCódigo: $returnCode\n\nVeja o Logcat."
+
+                            hasMp3Lame ->
+                                "✅ ExtractorEngine OK\n\n✅ FFmpeg executado\n\n✅ libmp3lame ENCONTRADO"
+
+                            else ->
+                                "⚠️ FFmpeg executado\n\n❌ libmp3lame NÃO encontrado\n\nVeja o Logcat."
+                        }
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        status = finalMessage
                     }
                 }
             }
