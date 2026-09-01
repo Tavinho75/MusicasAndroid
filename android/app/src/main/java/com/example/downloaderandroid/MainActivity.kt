@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
                     status = if (phase11.startsWith("❌")) {
                         phase11
                     } else {
-                        phase11 + "\n\n" + runPhase2NativeStateValidation()
+                        phase11 + "\n\n" + runPhase2NativeStateValidation() + "\n\n" + runPhase2RestartPersistenceValidation()
                     }
                 }
             }
@@ -227,6 +227,79 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /**
+     * Teste prático de persistência entre execuções do aplicativo.
+     *
+     * Primeira execução: grava um checkpoint READY e solicita reinício.
+     * Execução seguinte: restaura o checkpoint, compara todos os campos e
+     * limpa o armazenamento somente depois da confirmação.
+     *
+     * Isso ainda não implementa fila nem serviço em primeiro plano.
+     */
+    private fun runPhase2RestartPersistenceValidation(): String {
+        val repository = NativeDownloadTaskRepository(applicationContext)
+        val checkpointId = "phase2-restart-persistence-checkpoint"
+
+        return try {
+            val existing = repository.current()
+
+            if (existing?.id == checkpointId) {
+                val expected = DownloadTaskState(
+                    id = checkpointId,
+                    url = "https://example.com/restart-validation",
+                    status = DownloadTaskStatus.READY,
+                    title = "Checkpoint de persistência",
+                    detail = "Validar após reiniciar o aplicativo.",
+                    updatedAtEpochMillis = 42_000L
+                )
+
+                val restoredCorrectly = existing == expected
+                repository.clear()
+
+                Log.i(
+                    "Phase2Restart",
+                    "checkpointRestored=$restoredCorrectly; restored=$existing"
+                )
+
+                if (restoredCorrectly) {
+                    "✅ FASE 2: persistência após reinício do app OK"
+                } else {
+                    "❌ FASE 2: checkpoint restaurado com dados diferentes"
+                }
+            } else {
+                repository.clear()
+
+                val checkpoint = DownloadTaskState(
+                    id = checkpointId,
+                    url = "https://example.com/restart-validation",
+                    status = DownloadTaskStatus.READY,
+                    title = "Checkpoint de persistência",
+                    detail = "Validar após reiniciar o aplicativo.",
+                    updatedAtEpochMillis = 42_000L
+                )
+
+                repository.create(checkpoint)
+
+                val savedCorrectly = repository.current() == checkpoint
+
+                Log.i(
+                    "Phase2Restart",
+                    "checkpointCreated=$savedCorrectly; checkpoint=$checkpoint"
+                )
+
+                if (savedCorrectly) {
+                    "🔄 FASE 2: checkpoint salvo. Feche completamente o app e abra novamente para validar a persistência."
+                } else {
+                    "❌ FASE 2: não foi possível salvar o checkpoint de reinício"
+                }
+            }
+        } catch (error: Throwable) {
+            Log.e("Phase2Restart", "Falha no teste de persistência após reinício", error)
+            "❌ FASE 2: ${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
+        }
+    }
+
 
     private fun runFfmpegValidation(): String {
         Log.i("Phase1FFmpeg", "Teste 1: iniciando -hide_banner -encoders")
