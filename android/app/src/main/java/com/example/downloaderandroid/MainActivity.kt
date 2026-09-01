@@ -211,42 +211,56 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun validateMp3Format(file: File): Boolean {
+        var retriever: MediaMetadataRetriever? = null
+
         return try {
-            MediaMetadataRetriever().use { retriever ->
-                retriever.setDataSource(file.absolutePath)
+            retriever = MediaMetadataRetriever()
+            retriever.setDataSource(file.absolutePath)
 
-                val mime = retriever
-                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
-                    .orEmpty()
+            val mime = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+                .orEmpty()
 
-                val duration = retriever
-                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    ?.toLongOrNull()
-                    ?: 0L
+            val duration = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?: 0L
 
-                Log.i("Phase1MP3", "mime=$mime; durationMs=$duration")
+            Log.i("Phase1MP3", "mime=$mime; durationMs=$duration")
 
-                mime.contains("audio", ignoreCase = true) && duration > 0
-            }
+            mime.contains("audio", ignoreCase = true) && duration > 0
         } catch (error: Throwable) {
             Log.e("Phase1MP3", "Formato MP3 inválido", error)
             false
+        } finally {
+            try {
+                retriever?.release()
+            } catch (releaseError: Throwable) {
+                Log.w("Phase1MP3", "Falha ao liberar MediaMetadataRetriever", releaseError)
+            }
         }
     }
 
     private fun validateMp3Playback(file: File): Boolean {
-        return try {
-            MediaPlayer().use { player ->
-                player.setDataSource(file.absolutePath)
-                player.prepare()
+        var player: MediaPlayer? = null
 
-                val valid = player.duration > 0
-                Log.i("Phase1MP3", "MediaPlayer preparado; durationMs=${player.duration}")
-                valid
-            }
+        return try {
+            player = MediaPlayer()
+            player.setDataSource(file.absolutePath)
+            player.prepare()
+
+            val valid = player.duration > 0
+            Log.i("Phase1MP3", "MediaPlayer preparado; durationMs=${player.duration}")
+            valid
         } catch (error: Throwable) {
             Log.e("Phase1MP3", "MP3 não pôde ser preparado para reprodução", error)
             false
+        } finally {
+            try {
+                player?.release()
+            } catch (releaseError: Throwable) {
+                Log.w("Phase1MP3", "Falha ao liberar MediaPlayer", releaseError)
+            }
         }
     }
 }
