@@ -1,5 +1,7 @@
 package com.example.downloaderandroid
 
+import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -26,6 +28,7 @@ import com.example.downloaderandroid.core.YtDlpExtractorEngine
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -87,41 +90,163 @@ class MainActivity : ComponentActivity() {
             return "❌ ExtractorEngine falhou\n\n${extractorResult.message}"
         }
 
-        Log.i("Phase1FFmpeg", "Iniciando FFmpegKit.execute(-hide_banner -encoders)")
-
         return try {
             val ffmpegResult = withContext(Dispatchers.Default) {
-                val session = FFmpegKit.execute("-hide_banner -encoders")
-                val returnCode = session.returnCode
-                val output = session.output ?: ""
-                Triple(returnCode, output, ReturnCode.isSuccess(returnCode))
+                runFfmpegValidation()
             }
 
-            val returnCode = ffmpegResult.first
-            val output = ffmpegResult.second
-            val success = ffmpegResult.third
-            val hasMp3Lame = output.contains("libmp3lame", ignoreCase = true)
-
-            Log.i("Phase1FFmpeg", "FFmpeg finalizado. ReturnCode=$returnCode")
-            Log.i("Phase1FFmpeg", "libmp3lame=$hasMp3Lame")
-            Log.i("Phase1FFmpegOutput", output)
-
-            when {
-                !success ->
-                    "❌ ExtractorEngine OK\n\n❌ FFmpeg retornou erro.\n\nCódigo: $returnCode\n\nVeja o Logcat."
-
-                hasMp3Lame ->
-                    "✅ ExtractorEngine OK\n\n✅ FFmpeg executado\n\n✅ libmp3lame ENCONTRADO"
-
-                else ->
-                    "⚠️ ExtractorEngine OK\n\n⚠️ FFmpeg executado\n\n❌ libmp3lame NÃO encontrado\n\nVeja o Logcat."
-            }
+            ffmpegResult
         } catch (error: Throwable) {
-            Log.e("Phase1FFmpeg", "Falha fatal durante teste do FFmpeg", error)
+            Log.e("Phase1FFmpeg", "Falha fatal durante os testes do FFmpeg", error)
 
             "❌ ExtractorEngine OK\n\n❌ FFmpeg FALHOU AO EXECUTAR\n\n" +
                 "${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}\n\n" +
                 "Tag do Logcat: Phase1FFmpeg"
+        }
+    }
+
+    private fun runFfmpegValidation(): String {
+        Log.i("Phase1FFmpeg", "Teste 1: iniciando -hide_banner -encoders")
+
+        val encoderSession = FFmpegKit.execute("-hide_banner -encoders")
+        val encoderOutput = encoderSession.output ?: ""
+        val encoderSuccess = ReturnCode.isSuccess(encoderSession.returnCode)
+        val hasMp3Lame = encoderOutput.contains("libmp3lame", ignoreCase = true)
+
+        Log.i("Phase1FFmpeg", "Teste 1 finalizado. ReturnCode=${encoderSession.returnCode}")
+        Log.i("Phase1FFmpeg", "libmp3lame=$hasMp3Lame")
+        Log.i("Phase1FFmpegOutput", encoderOutput)
+
+        if (!encoderSuccess) {
+            return "❌ ExtractorEngine OK\n\n❌ FFmpeg retornou erro ao listar encoders.\n\nVeja o Logcat."
+        }
+
+        if (!hasMp3Lame) {
+            return "⚠️ ExtractorEngine OK\n\n⚠️ FFmpeg executado\n\n❌ libmp3lame NÃO encontrado"
+        }
+
+        val testDirectory = File(cacheDir, "phase11-media-test").apply {
+            mkdirs()
+        }
+        val wavFile = File(testDirectory, "input-test.wav")
+        val mp3File = File(testDirectory, "output-test.mp3")
+
+        wavFile.delete()
+        mp3File.delete()
+
+        // Gera primeiro um arquivo WAV real. Depois ele é convertido para MP3
+        // em uma segunda execução, validando um fluxo de entrada -> conversão.
+        val generateWavCommand =
+            "-hide_banner -y -f lavfi -i sine=frequency=440:sample_rate=44100:duration=2 " +
+                "-c:a pcm_s16le \"${wavFile.absolutePath}\""
+
+        Log.i("Phase1FFmpeg", "Teste 2: gerando WAV de entrada")
+        val wavSession = FFmpegKit.execute(generateWavCommand)
+
+        if (!ReturnCode.isSuccess(wavSession.returnCode) ||
+            !wavFile.exists() ||
+            wavFile.length() <= 0
+        ) {
+            Log.e("Phase1FFmpeg", "Falha ao gerar WAV. ReturnCode=${wavSession.returnCode}")
+            Log.e("Phase1FFmpegOutput", wavSession.output ?: "")
+
+            return "❌ ExtractorEngine OK\n\n✅ libmp3lame encontrado\n\n" +
+                "❌ Falha ao gerar arquivo de áudio de teste"
+        }
+
+        Log.i(
+            "Phase1FFmpeg",
+            "WAV criado: ${wavFile.absolutePath}; bytes=${wavFile.length()}"
+        )
+
+        val convertMp3Command =
+            "-hide_banner -y -i \"${wavFile.absolutePath}\" " +
+                "-c:a libmp3lame -b:a 192k \"${mp3File.absolutePath}\""
+
+        Log.i("Phase1FFmpeg", "Teste 3: convertendo WAV -> MP3 com libmp3lame")
+        val mp3Session = FFmpegKit.execute(convertMp3Command)
+
+        if (!ReturnCode.isSuccess(mp3Session.returnCode)) {
+            Log.e("Phase1FFmpeg", "Falha na conversão MP3. ReturnCode=${mp3Session.returnCode}")
+            Log.e("Phase1FFmpegOutput", mp3Session.output ?: "")
+
+            return "❌ ExtractorEngine OK\n\n✅ libmp3lame encontrado\n\n" +
+                "❌ Conversão WAV → MP3 falhou"
+        }
+
+        val fileExists = mp3File.exists()
+        val fileSize = if (fileExists) mp3File.length() else 0L
+        val correctExtension = mp3File.extension.equals("mp3", ignoreCase = true)
+        val formatValid = validateMp3Format(mp3File)
+        val playbackValid = validateMp3Playback(mp3File)
+
+        Log.i(
+            "Phase1MP3",
+            "exists=$fileExists; bytes=$fileSize; extension=$correctExtension; " +
+                "format=$formatValid; playback=$playbackValid; path=${mp3File.absolutePath}"
+        )
+
+        return if (
+            fileExists &&
+            fileSize > 0 &&
+            correctExtension &&
+            formatValid &&
+            playbackValid
+        ) {
+            "✅ ExtractorEngine OK\n\n" +
+                "✅ FFmpeg executado\n\n" +
+                "✅ libmp3lame ENCONTRADO\n\n" +
+                "✅ WAV → MP3 convertido\n\n" +
+                "✅ MP3 válido e reproduzível\n\n" +
+                "Tamanho: $fileSize bytes"
+        } else {
+            "⚠️ Conversão executada, mas validação incompleta\n\n" +
+                "Arquivo existe: $fileExists\n" +
+                "Tamanho: $fileSize bytes\n" +
+                "Extensão MP3: $correctExtension\n" +
+                "Formato válido: $formatValid\n" +
+                "Reprodução válida: $playbackValid\n\n" +
+                "Veja Logcat: Phase1MP3"
+        }
+    }
+
+    private fun validateMp3Format(file: File): Boolean {
+        return try {
+            MediaMetadataRetriever().use { retriever ->
+                retriever.setDataSource(file.absolutePath)
+
+                val mime = retriever
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+                    .orEmpty()
+
+                val duration = retriever
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()
+                    ?: 0L
+
+                Log.i("Phase1MP3", "mime=$mime; durationMs=$duration")
+
+                mime.contains("audio", ignoreCase = true) && duration > 0
+            }
+        } catch (error: Throwable) {
+            Log.e("Phase1MP3", "Formato MP3 inválido", error)
+            false
+        }
+    }
+
+    private fun validateMp3Playback(file: File): Boolean {
+        return try {
+            MediaPlayer().use { player ->
+                player.setDataSource(file.absolutePath)
+                player.prepare()
+
+                val valid = player.duration > 0
+                Log.i("Phase1MP3", "MediaPlayer preparado; durationMs=${player.duration}")
+                valid
+            }
+        } catch (error: Throwable) {
+            Log.e("Phase1MP3", "MP3 não pôde ser preparado para reprodução", error)
+            false
         }
     }
 }
