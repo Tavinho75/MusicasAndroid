@@ -270,16 +270,31 @@ class MainActivity : ComponentActivity() {
             } else {
                 repository.clear()
 
-                val checkpoint = DownloadTaskState(
+                val draftCheckpoint = DownloadTaskState(
                     id = checkpointId,
                     url = "https://example.com/restart-validation",
-                    status = DownloadTaskStatus.READY,
+                    status = DownloadTaskStatus.DRAFT,
                     title = "Checkpoint de persistência",
+                    detail = "Preparando checkpoint de persistência.",
+                    updatedAtEpochMillis = 40_000L
+                )
+
+                // O repositório corretamente exige que uma nova tarefa comece
+                // em DRAFT. Para chegar ao checkpoint READY usamos as
+                // transições oficiais da máquina de estados.
+                repository.create(draftCheckpoint)
+
+                repository.transition(
+                    target = DownloadTaskStatus.ANALYZING,
+                    detail = "Preparando checkpoint de persistência.",
+                    updatedAtEpochMillis = 41_000L
+                )
+
+                val checkpoint = repository.transition(
+                    target = DownloadTaskStatus.READY,
                     detail = "Validar após reiniciar o aplicativo.",
                     updatedAtEpochMillis = 42_000L
                 )
-
-                repository.create(checkpoint)
 
                 val savedCorrectly = repository.current() == checkpoint
 
