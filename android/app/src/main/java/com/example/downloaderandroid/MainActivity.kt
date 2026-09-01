@@ -25,6 +25,9 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.core.ExtractorProbeResult
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
+import com.example.downloaderandroid.state.DownloadStateStore
+import com.example.downloaderandroid.state.DownloadTaskState
+import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,7 +53,7 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "FASE 1.1 — ExtractorEngine + FFmpeg",
+                            text = "FASE 1.1 + FASE 2 — Base nativa",
                             textAlign = TextAlign.Center
                         )
 
@@ -63,7 +66,12 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
-                    status = runPhase11Tests()
+                    val phase11 = runPhase11Tests()
+                    status = if (phase11.startsWith("❌")) {
+                        phase11
+                    } else {
+                        phase11 + "\n\n" + runPhase2NativeStateValidation()
+                    }
                 }
             }
         }
@@ -102,6 +110,48 @@ class MainActivity : ComponentActivity() {
             "❌ ExtractorEngine OK\n\n❌ FFmpeg FALHOU AO EXECUTAR\n\n" +
                 "${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}\n\n" +
                 "Tag do Logcat: Phase1FFmpeg"
+        }
+    }
+
+    /**
+     * Validação mínima da FASE 2.
+     * Não cria uma fila nem inicia downloads. Apenas confirma que o estado
+     * da aplicação pode permanecer na camada Android e sobreviver a uma
+     * leitura posterior do SharedPreferences.
+     */
+    private fun runPhase2NativeStateValidation(): String {
+        val store = DownloadStateStore(applicationContext)
+
+        return try {
+            val expected = DownloadTaskState(
+                id = "phase2-native-state-validation",
+                url = "https://example.com/",
+                status = DownloadTaskStatus.READY,
+                title = "Validação de estado nativo",
+                detail = "Estado persistido pela camada Android.",
+                updatedAtEpochMillis = 1_000L
+            )
+
+            store.save(expected)
+            val restored = store.load()
+            val restoredCorrectly = restored == expected
+
+            store.clear()
+            val clearedCorrectly = store.load() == null
+
+            Log.i(
+                "Phase2State",
+                "restoredCorrectly=$restoredCorrectly; clearedCorrectly=$clearedCorrectly"
+            )
+
+            if (restoredCorrectly && clearedCorrectly) {
+                "✅ FASE 2: estado persistente Android OK"
+            } else {
+                "❌ FASE 2: falha na validação do estado persistente Android"
+            }
+        } catch (error: Throwable) {
+            Log.e("Phase2State", "Falha na validação do estado persistente", error)
+            "❌ FASE 2: ${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
         }
     }
 
