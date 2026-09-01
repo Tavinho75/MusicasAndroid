@@ -27,6 +27,7 @@ import com.example.downloaderandroid.core.ExtractorProbeResult
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
 import com.example.downloaderandroid.state.DownloadStateStore
 import com.example.downloaderandroid.state.DownloadTaskState
+import com.example.downloaderandroid.state.DownloadTaskStateMachine
 import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.Dispatchers
@@ -123,31 +124,69 @@ class MainActivity : ComponentActivity() {
         val store = DownloadStateStore(applicationContext)
 
         return try {
-            val expected = DownloadTaskState(
+            val draft = DownloadTaskState(
                 id = "phase2-native-state-validation",
                 url = "https://example.com/",
-                status = DownloadTaskStatus.READY,
+                status = DownloadTaskStatus.DRAFT,
                 title = "Validação de estado nativo",
-                detail = "Estado persistido pela camada Android.",
+                detail = "Tarefa criada pela camada Android.",
                 updatedAtEpochMillis = 1_000L
             )
 
-            store.save(expected)
-            val restored = store.load()
-            val restoredCorrectly = restored == expected
+            store.save(draft)
+            val draftRestored = store.load() == draft
+
+            val analyzing = DownloadTaskStateMachine.transition(
+                state = draft,
+                target = DownloadTaskStatus.ANALYZING,
+                detail = "Transição DRAFT -> ANALYZING validada.",
+                updatedAtEpochMillis = 2_000L
+            )
+            store.save(analyzing)
+            val analyzingRestored = store.load() == analyzing
+
+            val ready = DownloadTaskStateMachine.transition(
+                state = analyzing,
+                target = DownloadTaskStatus.READY,
+                detail = "Transição ANALYZING -> READY validada.",
+                updatedAtEpochMillis = 3_000L
+            )
+            store.save(ready)
+            val readyRestored = store.load() == ready
+
+            val invalidTransitionRejected = try {
+                DownloadTaskStateMachine.transition(
+                    state = ready,
+                    target = DownloadTaskStatus.COMPLETED,
+                    updatedAtEpochMillis = 4_000L
+                )
+                false
+            } catch (_: IllegalStateException) {
+                true
+            }
 
             store.clear()
             val clearedCorrectly = store.load() == null
 
             Log.i(
                 "Phase2State",
-                "restoredCorrectly=$restoredCorrectly; clearedCorrectly=$clearedCorrectly"
+                "draftRestored=$draftRestored; " +
+                    "analyzingRestored=$analyzingRestored; " +
+                    "readyRestored=$readyRestored; " +
+                    "invalidTransitionRejected=$invalidTransitionRejected; " +
+                    "clearedCorrectly=$clearedCorrectly"
             )
 
-            if (restoredCorrectly && clearedCorrectly) {
-                "✅ FASE 2: estado persistente Android OK"
+            if (
+                draftRestored &&
+                analyzingRestored &&
+                readyRestored &&
+                invalidTransitionRejected &&
+                clearedCorrectly
+            ) {
+                "✅ FASE 2: persistência + transições nativas OK"
             } else {
-                "❌ FASE 2: falha na validação do estado persistente Android"
+                "❌ FASE 2: falha na validação de estado/transição nativa"
             }
         } catch (error: Throwable) {
             Log.e("Phase2State", "Falha na validação do estado persistente", error)
