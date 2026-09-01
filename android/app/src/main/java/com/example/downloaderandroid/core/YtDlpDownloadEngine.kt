@@ -9,8 +9,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Integração de download com tentativas de compatibilidade para fontes que
- * exigem um cliente específico do extractor, como o YouTube.
+ * Download engine with YouTube fallbacks.
+ *
+ * YouTube currently requires PO tokens for many audio-only streams. The
+ * android_vr client still exposes format 18 without a GVS PO token, so we
+ * try that free fallback first. Format 18 contains AAC audio inside MP4;
+ * the next processing phase can extract/convert the audio with FFmpeg.
  */
 class YtDlpDownloadEngine(context: Context) {
 
@@ -18,6 +22,7 @@ class YtDlpDownloadEngine(context: Context) {
 
     private data class DownloadAttempt(
         val label: String,
+        val format: String,
         val extractorArgs: String?
     )
 
@@ -39,15 +44,28 @@ class YtDlpDownloadEngine(context: Context) {
 
                 val attempts = listOf(
                     DownloadAttempt(
+                        label = "Android VR (formato 18 com áudio AAC)",
+                        format = "18",
+                        extractorArgs = "youtube:player_client=android_vr"
+                    ),
+                    DownloadAttempt(
+                        label = "Web incorporado",
+                        format = "bestaudio/best",
+                        extractorArgs = "youtube:player_client=web_embedded"
+                    ),
+                    DownloadAttempt(
                         label = "padrão",
+                        format = "bestaudio/best",
                         extractorArgs = null
                     ),
                     DownloadAttempt(
                         label = "cliente Android",
+                        format = "bestaudio/best",
                         extractorArgs = "youtube:player_client=android"
                     ),
                     DownloadAttempt(
                         label = "cliente web",
+                        format = "bestaudio/best",
                         extractorArgs = "youtube:player_client=web"
                     )
                 )
@@ -62,10 +80,12 @@ class YtDlpDownloadEngine(context: Context) {
 
                     val request = YtDlpRequest(url)
                         .setOutputTemplate(outputTemplate)
-                        .addOption("-f", "bestaudio/best")
+                        .addOption("-f", attempt.format)
                         .addOption("--no-playlist")
                         .addOption("--no-part")
                         .addOption("--force-overwrites")
+                        .addOption("--retries", "3")
+                        .addOption("--fragment-retries", "3")
 
                     attempt.extractorArgs?.let { extractorArgs ->
                         request.addOption("--extractor-args", extractorArgs)
@@ -79,11 +99,10 @@ class YtDlpDownloadEngine(context: Context) {
                                 success = true,
                                 exitCode = response.exitCode,
                                 outputDirectory = outputDirectory.absolutePath,
-                                message = if (index == 0) {
-                                    "Áudio baixado com sucesso."
-                                } else {
-                                    "Áudio baixado com sucesso usando ${attempt.label}."
-                                }
+                                message = when (index) {
+                                    0 -> "Download concluído pelo cliente Android VR. O arquivo contém áudio AAC e será tratado pelo FFmpeg nas próximas fases."
+                                    else -> "Download concluído usando ${attempt.label}."
+                                },
                             )
                         }
 
