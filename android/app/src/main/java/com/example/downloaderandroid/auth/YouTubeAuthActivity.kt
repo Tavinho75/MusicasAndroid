@@ -1,10 +1,13 @@
 package com.example.downloaderandroid.auth
 
 import android.app.Activity
+import android.graphics.Color
 import android.os.Bundle
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -13,30 +16,67 @@ import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Small native authentication screen used only to establish a YouTube session.
- * No cookie value is displayed or logged.
+ * Native YouTube authentication screen.
+ *
+ * The WebView is used only to establish the user's YouTube session. Cookie
+ * values are never displayed or logged; they are persisted by YouTubeCookieStore
+ * in the application's private storage.
  */
 class YouTubeAuthActivity : Activity() {
 
     private lateinit var webView: WebView
     private lateinit var status: TextView
+    private lateinit var saveButton: Button
     private val cookieManager by lazy { CookieManager.getInstance() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // This screen has its own header, so an ActionBar must not consume space
+        // or introduce a second title/action row from the activity theme.
+        actionBar?.hide()
+
         cookieManager.setAcceptCookie(true)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
         }
 
-        status = TextView(this).apply {
-            text = "Entre na sua conta do YouTube. Depois toque em ‘Salvar autenticação’."
-            setPadding(24, 24, 24, 16)
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 20, 24, 12)
         }
-        root.addView(
+
+        val title = TextView(this).apply {
+            text = "Autenticação do YouTube"
+            textSize = 20f
+            setTextColor(Color.BLACK)
+        }
+        header.addView(
+            title,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        status = TextView(this).apply {
+            text = "Faça login no YouTube. Depois toque em ‘Salvar autenticação’."
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 8, 0, 0)
+        }
+        header.addView(
             status,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        root.addView(
+            header,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -46,12 +86,26 @@ class YouTubeAuthActivity : Activity() {
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.databaseEnabled = true
+            settings.databaseEnabled = false
+            settings.cacheMode = WebSettings.LOAD_DEFAULT
             settings.allowFileAccess = false
             settings.allowContentAccess = false
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    status.text = "YouTube aberto. Faça login, se necessário, e depois toque em ‘Salvar autenticação’."
+                    status.text = "Sessão do YouTube carregada. Faça login, se necessário, e salve a autenticação."
+                    saveButton.isEnabled = true
+                }
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    errorCode: Int,
+                    description: String?,
+                    failingUrl: String?
+                ) {
+                    status.text = "Não foi possível carregar o YouTube. Verifique a internet e tente novamente."
                 }
             }
             webChromeClient = WebChromeClient()
@@ -66,8 +120,9 @@ class YouTubeAuthActivity : Activity() {
             )
         )
 
-        val saveButton = Button(this).apply {
-            text = "Salvar autenticação"
+        saveButton = Button(this).apply {
+            text = "SALVAR AUTENTICAÇÃO"
+            isEnabled = false
             setOnClickListener { saveCookies() }
         }
         root.addView(
@@ -75,7 +130,9 @@ class YouTubeAuthActivity : Activity() {
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            ).apply {
+                setMargins(16, 8, 16, 16)
+            }
         )
 
         setContentView(root)
@@ -105,7 +162,8 @@ class YouTubeAuthActivity : Activity() {
         try {
             val count = YouTubeCookieStore(this).saveFromWebViewCookieStrings(cookies)
             Toast.makeText(this, "Autenticação salva com $count cookies.", Toast.LENGTH_LONG).show()
-            status.text = "✅ Autenticação salva com segurança no armazenamento privado do aplicativo."
+            status.text = "✅ Autenticação salva com segurança."
+            saveButton.isEnabled = false
             setResult(RESULT_OK)
         } catch (error: IllegalArgumentException) {
             Toast.makeText(this, error.message ?: "Nenhum cookie encontrado.", Toast.LENGTH_LONG).show()
