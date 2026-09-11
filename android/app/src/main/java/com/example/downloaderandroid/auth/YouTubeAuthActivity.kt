@@ -3,7 +3,6 @@ package com.example.downloaderandroid.auth
 import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
-import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -32,10 +31,8 @@ class YouTubeAuthActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // This screen has its own header, so an ActionBar must not consume space
-        // or introduce a second title/action row from the activity theme.
+        // The authentication screen owns its layout; do not use an ActionBar.
         actionBar?.hide()
-
         cookieManager.setAcceptCookie(true)
 
         val root = LinearLayout(this).apply {
@@ -83,10 +80,27 @@ class YouTubeAuthActivity : Activity() {
             )
         )
 
+        // Keep this action in the app's own content area, above the WebView,
+        // instead of placing it at the bottom where Android navigation controls
+        // or an ActionBar could overlap it.
+        saveButton = Button(this).apply {
+            text = "SALVAR AUTENTICAÇÃO"
+            isEnabled = false
+            setOnClickListener { saveCookies() }
+        }
+        root.addView(
+            saveButton,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(16, 4, 16, 12)
+            }
+        )
+
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.databaseEnabled = false
             settings.cacheMode = WebSettings.LOAD_DEFAULT
             settings.allowFileAccess = false
             settings.allowContentAccess = false
@@ -95,7 +109,7 @@ class YouTubeAuthActivity : Activity() {
 
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    status.text = "Sessão do YouTube carregada. Faça login, se necessário, e salve a autenticação."
+                    status.text = "Sessão do YouTube carregada. Faça login, se necessário, e depois salve a autenticação."
                     saveButton.isEnabled = true
                 }
 
@@ -118,21 +132,6 @@ class YouTubeAuthActivity : Activity() {
                 0,
                 1f
             )
-        )
-
-        saveButton = Button(this).apply {
-            text = "SALVAR AUTENTICAÇÃO"
-            isEnabled = false
-            setOnClickListener { saveCookies() }
-        }
-        root.addView(
-            saveButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(16, 8, 16, 16)
-            }
         )
 
         setContentView(root)
