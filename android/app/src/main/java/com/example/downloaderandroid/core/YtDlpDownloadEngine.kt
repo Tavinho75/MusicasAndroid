@@ -9,12 +9,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Download engine with YouTube fallbacks.
+ * Download engine with YouTube client fallbacks.
  *
- * YouTube currently requires PO tokens for many audio-only streams. The
- * android_vr client still exposes format 18 without a GVS PO token, so we
- * try that free fallback first. Format 18 contains AAC audio inside MP4;
- * the next processing phase can extract/convert the audio with FFmpeg.
+ * YouTube's current PO-token enforcement makes ordinary GVS downloads fail
+ * with HTTP 403 for several clients. We therefore try clients which currently
+ * expose a stream path that does not require a GVS PO token, before falling
+ * back to the more conventional clients.
  */
 class YtDlpDownloadEngine(context: Context) {
 
@@ -42,11 +42,26 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
+                // Order matters. web_safari can expose HLS formats, whose GVS
+                // requests currently do not need a PO token. Android VR format
+                // 18 is kept as the next no-PO fallback. TV is another client
+                // which currently does not require a GVS PO token when used
+                // without account cookies.
                 val attempts = listOf(
+                    DownloadAttempt(
+                        label = "Web Safari (HLS sem PO token)",
+                        format = "bestaudio[protocol*=m3u8]/best[protocol*=m3u8]",
+                        extractorArgs = "youtube:player_client=web_safari"
+                    ),
                     DownloadAttempt(
                         label = "Android VR (formato 18 com áudio AAC)",
                         format = "18",
                         extractorArgs = "youtube:player_client=android_vr"
+                    ),
+                    DownloadAttempt(
+                        label = "TV",
+                        format = "bestaudio/best",
+                        extractorArgs = "youtube:player_client=tv"
                     ),
                     DownloadAttempt(
                         label = "Web incorporado",
@@ -72,7 +87,7 @@ class YtDlpDownloadEngine(context: Context) {
 
                 val errors = mutableListOf<String>()
 
-                for ((index, attempt) in attempts.withIndex()) {
+                for (attempt in attempts) {
                     val outputTemplate = File(
                         outputDirectory,
                         "%(title)s.%(ext)s"
@@ -99,10 +114,7 @@ class YtDlpDownloadEngine(context: Context) {
                                 success = true,
                                 exitCode = response.exitCode,
                                 outputDirectory = outputDirectory.absolutePath,
-                                message = when (index) {
-                                    0 -> "Download concluído pelo cliente Android VR. O arquivo contém áudio AAC e será tratado pelo FFmpeg nas próximas fases."
-                                    else -> "Download concluído usando ${attempt.label}."
-                                },
+                                message = "Download concluído usando ${attempt.label}."
                             )
                         }
 
