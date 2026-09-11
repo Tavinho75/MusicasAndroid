@@ -21,6 +21,17 @@ class DownloadMainActivity : MainActivity() {
         super.onCreate(savedInstanceState)
 
         val density = resources.displayMetrics.density
+        val topSpace = (76 * density).toInt()
+
+        // Reserve a dedicated content area for the login action so it does not
+        // cover the existing Compose screen underneath it.
+        findViewById<FrameLayout>(android.R.id.content)?.setPadding(
+            0,
+            topSpace,
+            0,
+            0
+        )
+
         val loginButton = Button(this).apply {
             text = "Entrar no YouTube"
             contentDescription = "Entrar no YouTube e salvar autenticação"
@@ -34,7 +45,7 @@ class DownloadMainActivity : MainActivity() {
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            topMargin = (48 * density).toInt()
+            topMargin = (8 * density).toInt()
         }
 
         addContentView(loginButton, params)
