@@ -1,29 +1,36 @@
 package com.example.downloaderandroid.core
 
 import android.content.Context
+import android.content.Intent
 import dev.ffmpegkit_maintained.ytdlp.YtDlp
 import dev.ffmpegkit_maintained.ytdlp.YtDlpException
 import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest
+import com.example.downloaderandroid.auth.YouTubeAuthActivity
+import com.example.downloaderandroid.auth.YouTubeCookieStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Download engine with YouTube client fallbacks.
+ * Real audio download engine used by the Phase 3 test harness.
  *
- * YouTube's current PO-token enforcement makes ordinary GVS downloads fail
- * with HTTP 403 for several clients. We therefore try clients which currently
- * expose a stream path that does not require a GVS PO token, before falling
- * back to the more conventional clients.
+ * YouTube currently enforces PO-token requirements for several clients. The
+ * engine therefore tries an authenticated/default request when a private
+ * cookie jar exists, then the known free no-PO fallbacks.
+ *
+ * Cookies remain in app-private storage and are passed directly to yt-dlp;
+ * they never enter the Compose/JavaScript layer and are never logged.
  */
 class YtDlpDownloadEngine(context: Context) {
 
     private val appContext = context.applicationContext
+    private val cookieStore = YouTubeCookieStore(appContext)
 
     private data class DownloadAttempt(
         val label: String,
         val format: String,
-        val extractorArgs: String?
+        val extractorArgs: String?,
+        val requiresCookies: Boolean = false
     )
 
     suspend fun downloadBestAudio(url: String): DownloadExecutionResult =
@@ -42,48 +49,69 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
-                // Order matters. web_safari can expose HLS formats, whose GVS
-                // requests currently do not need a PO token. Android VR format
-                // 18 is kept as the next no-PO fallback. TV is another client
-                // which currently does not require a GVS PO token when used
-                // without account cookies.
-                val attempts = listOf(
-                    DownloadAttempt(
-                        label = "Web Safari (HLS sem PO token)",
-                        format = "bestaudio[protocol*=m3u8]/best[protocol*=m3u8]",
-                        extractorArgs = "youtube:player_client=web_safari"
-                    ),
-                    DownloadAttempt(
-                        label = "Android VR (formato 18 com áudio AAC)",
-                        format = "18",
-                        extractorArgs = "youtube:player_client=android_vr"
-                    ),
-                    DownloadAttempt(
-                        label = "TV",
-                        format = "bestaudio/best",
-                        extractorArgs = "youtube:player_client=tv"
-                    ),
-                    DownloadAttempt(
-                        label = "Web incorporado",
-                        format = "bestaudio/best",
-                        extractorArgs = "youtube:player_client=web_embedded"
-                    ),
-                    DownloadAttempt(
-                        label = "padrão",
-                        format = "bestaudio/best",
-                        extractorArgs = null
-                    ),
-                    DownloadAttempt(
-                        label = "cliente Android",
-                        format = "bestaudio/best",
-                        extractorArgs = "youtube:player_client=android"
-                    ),
-                    DownloadAttempt(
-                        label = "cliente web",
-                        format = "bestaudio/best",
-                        extractorArgs = "youtube:player_client=web"
+                val hasCookies = cookieStore.hasCookies()
+
+                val attempts = buildList {
+                    if (hasCookies) {
+                        // With account cookies, let the current yt-dlp default
+                        // client selection choose the authenticated YouTube
+                        // path. This is also the path needed for private data.
+                        add(
+                            DownloadAttempt(
+                                label = "YouTube autenticado",
+                                format = "bestaudio/best",
+                                extractorArgs = null,
+                                requiresCookies = true
+                            )
+                        )
+                        add(
+                            DownloadAttempt(
+                                label = "YouTube autenticado (web creator)",
+                                format = "bestaudio/best",
+                                extractorArgs = "youtube:player_client=web_creator",
+                                requiresCookies = true
+                            )
+                        )
+                    }
+
+                    // Free public fallbacks. web_safari may expose HLS formats
+                    // that avoid the current GVS PO-token requirement.
+                    add(
+                        DownloadAttempt(
+                            label = "Web Safari (HLS sem PO token)",
+                            format = "bestaudio[protocol*=m3u8]/best[protocol*=m3u8]",
+                            extractorArgs = "youtube:player_client=web_safari"
+                        )
                     )
-                )
+                    add(
+                        DownloadAttempt(
+                            label = "Android VR (formato 18 com áudio AAC)",
+                            format = "18",
+                            extractorArgs = "youtube:player_client=android_vr"
+                        )
+                    )
+                    add(
+                        DownloadAttempt(
+                            label = "TV",
+                            format = "bestaudio/best",
+                            extractorArgs = "youtube:player_client=tv"
+                        )
+                    )
+                    add(
+                        DownloadAttempt(
+                            label = "Web incorporado",
+                            format = "bestaudio/best",
+                            extractorArgs = "youtube:player_client=web_embedded"
+                        )
+                    )
+                    add(
+                        DownloadAttempt(
+                            label = "padrão",
+                            format = "bestaudio/best",
+                            extractorArgs = null
+                        )
+                    )
+                }
 
                 val errors = mutableListOf<String>()
 
@@ -101,6 +129,10 @@ class YtDlpDownloadEngine(context: Context) {
                         .addOption("--force-overwrites")
                         .addOption("--retries", "3")
                         .addOption("--fragment-retries", "3")
+
+                    if (attempt.requiresCookies) {
+                        request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
+                    }
 
                     attempt.extractorArgs?.let { extractorArgs ->
                         request.addOption("--extractor-args", extractorArgs)
@@ -127,6 +159,18 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
+                if (!hasCookies && errors.any { it.contains("403") }) {
+                    // Open the native login screen only after the free public
+                    // routes have failed. The next tap on the download button
+                    // will reuse the private cookie jar.
+                    runCatching {
+                        appContext.startActivity(
+                            Intent(appContext, YouTubeAuthActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                }
+
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
@@ -136,6 +180,10 @@ class YtDlpDownloadEngine(context: Context) {
                         if (errors.isNotEmpty()) {
                             append("\n\nTentativas:\n")
                             append(errors.joinToString("\n"))
+                        }
+                        if (!hasCookies && errors.any { it.contains("403") }) {
+                            append("\n\nO YouTube bloqueou os streams públicos com HTTP 403.")
+                            append("\nA tela de autenticação foi aberta. Faça login e salve a autenticação; depois toque novamente em ‘Testar download’.")
                         }
                     }
                 )
