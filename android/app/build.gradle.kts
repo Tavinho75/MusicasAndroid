@@ -54,10 +54,15 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
-    implementation("dev.ffmpegkit-maintained:yt-dlp-android:2.0.2")
+    // Seal-compatible yt-dlp Android backend. This provides the same
+    // YoutubeDLRequest/YoutubeDL execution model used by Seal, including
+    // bundled Python/yt-dlp, QuickJS support, and ffmpeg/aria2c integration.
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")
 
-    // FFmpegKit 8.1.7 uses smart-exception at runtime. Declaring it explicitly
-    // prevents the required Java class from being omitted from the APK.
+    // Keep the already validated FFmpegKit dependency for the existing
+    // Phase 1.1 WAV -> MP3 validation path.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7")
     implementation("com.arthenica:smart-exception-java:0.2.1")
 
