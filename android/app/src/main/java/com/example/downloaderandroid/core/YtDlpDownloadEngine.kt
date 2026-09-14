@@ -2,11 +2,11 @@ package com.example.downloaderandroid.core
 
 import android.content.Context
 import android.content.Intent
-import dev.ffmpegkit_maintained.ytdlp.YtDlp
-import dev.ffmpegkit_maintained.ytdlp.YtDlpException
-import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
 import com.example.downloaderandroid.auth.YouTubeCookieStore
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLException
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -14,9 +14,10 @@ import java.io.File
 /**
  * Real audio download engine used by the Phase 3 test harness.
  *
- * YouTube currently enforces PO-token requirements for several clients. The
- * engine therefore tries an authenticated/default request when a private
- * cookie jar exists, then the known free no-PO fallbacks.
+ * The execution layer now follows Seal's backend model: YoutubeDLRequest is
+ * executed through youtubedl-android, whose runtime supplies Python/yt-dlp,
+ * QuickJS, and the ffmpeg/aria2c integration. We keep our own small engine so
+ * the rest of MusicasAndroid does not depend on Seal's UI/database classes.
  *
  * Cookies remain in app-private storage and are passed directly to yt-dlp;
  * they never enter the Compose/JavaScript layer and are never logged.
@@ -28,21 +29,20 @@ class YtDlpDownloadEngine(context: Context) {
 
     private data class DownloadAttempt(
         val label: String,
-        val format: String,
-        val extractorArgs: String?,
-        val requiresCookies: Boolean = false
+        val extractorArgs: String? = null,
+        val requiresCookies: Boolean = false,
     )
 
     suspend fun downloadBestAudio(url: String): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
             try {
-                YtDlp.init(appContext)
+                SealCompatibleDownloaderBackend.init(appContext)
 
                 val outputDirectory = File(
                     requireNotNull(appContext.getExternalFilesDir(null)) {
                         "Armazenamento externo do aplicativo indisponível."
                     },
-                    "phase3-downloads"
+                    "phase3-downloads",
                 ).apply {
                     if (!exists() && !mkdirs()) {
                         error("Não foi possível criar a pasta de downloads.")
@@ -50,65 +50,33 @@ class YtDlpDownloadEngine(context: Context) {
                 }
 
                 val hasCookies = cookieStore.hasCookies()
-
                 val attempts = buildList {
                     if (hasCookies) {
-                        // With account cookies, let the current yt-dlp default
-                        // client selection choose the authenticated YouTube
-                        // path. This is also the path needed for private data.
                         add(
                             DownloadAttempt(
                                 label = "YouTube autenticado",
-                                format = "bestaudio/best",
-                                extractorArgs = null,
-                                requiresCookies = true
-                            )
-                        )
-                        add(
-                            DownloadAttempt(
-                                label = "YouTube autenticado (web creator)",
-                                format = "bestaudio/best",
-                                extractorArgs = "youtube:player_client=web_creator",
-                                requiresCookies = true
+                                requiresCookies = true,
                             )
                         )
                     }
 
-                    // Free public fallbacks. web_safari may expose HLS formats
-                    // that avoid the current GVS PO-token requirement.
+                    // Keep the public fallback routes from the previous test,
+                    // but execute them through the Seal-compatible backend.
                     add(
                         DownloadAttempt(
-                            label = "Web Safari (HLS sem PO token)",
-                            format = "bestaudio[protocol*=m3u8]/best[protocol*=m3u8]",
-                            extractorArgs = "youtube:player_client=web_safari"
+                            label = "YouTube padrão",
                         )
                     )
                     add(
                         DownloadAttempt(
-                            label = "Android VR (formato 18 com áudio AAC)",
-                            format = "18",
-                            extractorArgs = "youtube:player_client=android_vr"
+                            label = "Android VR",
+                            extractorArgs = "youtube:player_client=android_vr",
                         )
                     )
                     add(
                         DownloadAttempt(
-                            label = "TV",
-                            format = "bestaudio/best",
-                            extractorArgs = "youtube:player_client=tv"
-                        )
-                    )
-                    add(
-                        DownloadAttempt(
-                            label = "Web incorporado",
-                            format = "bestaudio/best",
-                            extractorArgs = "youtube:player_client=web_embedded"
-                        )
-                    )
-                    add(
-                        DownloadAttempt(
-                            label = "padrão",
-                            format = "bestaudio/best",
-                            extractorArgs = null
+                            label = "Web Safari HLS",
+                            extractorArgs = "youtube:player_client=web_safari",
                         )
                     )
                 }
@@ -118,55 +86,73 @@ class YtDlpDownloadEngine(context: Context) {
                 for (attempt in attempts) {
                     val outputTemplate = File(
                         outputDirectory,
-                        "%(title)s.%(ext)s"
+                        "%(title)s.%(ext)s",
                     ).absolutePath
 
-                    val request = YtDlpRequest(url)
-                        .setOutputTemplate(outputTemplate)
-                        .addOption("-f", attempt.format)
+                    val request = YoutubeDLRequest(url)
+                        .addOption("-o", outputTemplate)
+                        .addOption("-f", "bestaudio/best")
+                        .addOption("-x")
+                        .addOption("--audio-format", "mp3")
+                        .addOption("--audio-quality", "0")
                         .addOption("--no-playlist")
+                        .addOption("--no-mtime")
+                        .addOption("--newline")
                         .addOption("--no-part")
                         .addOption("--force-overwrites")
                         .addOption("--retries", "3")
                         .addOption("--fragment-retries", "3")
+                        .addOption("--concurrent-fragments", "4")
+                        .addOption("--embed-metadata")
 
                     if (attempt.requiresCookies) {
                         request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
                     }
 
-                    attempt.extractorArgs?.let { extractorArgs ->
-                        request.addOption("--extractor-args", extractorArgs)
+                    attempt.extractorArgs?.let {
+                        request.addOption("--extractor-args", it)
                     }
 
                     try {
-                        val response = YtDlp.execute(request, null)
+                        val response = YoutubeDL.getInstance().execute(
+                            request = request,
+                            processId = "phase3-${System.currentTimeMillis()}",
+                        )
 
-                        if (response.isSuccess) {
+                        if (response.exitCode == 0) {
                             return@withContext DownloadExecutionResult(
                                 success = true,
                                 exitCode = response.exitCode,
                                 outputDirectory = outputDirectory.absolutePath,
-                                message = "Download concluído usando ${attempt.label}."
+                                message = "Download concluído usando ${attempt.label}.",
                             )
                         }
 
                         errors += "${attempt.label}: código ${response.exitCode}"
-                    } catch (error: YtDlpException) {
+                        response.err
+                            .lineSequence()
+                            .filter { it.isNotBlank() }
+                            .takeLast(3)
+                            .forEach { errors += "  $it" }
+                    } catch (error: YoutubeDLException) {
                         errors += "${attempt.label}: ${error.message ?: "falha sem mensagem"}"
+                    } catch (error: YoutubeDL.CanceledException) {
+                        errors += "${attempt.label}: download cancelado"
+                    } catch (error: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        errors += "${attempt.label}: execução interrompida"
                     } catch (error: Throwable) {
                         errors += "${attempt.label}: ${error.javaClass.simpleName}: " +
                             (error.message ?: "sem mensagem")
                     }
                 }
 
-                if (!hasCookies && errors.any { it.contains("403") }) {
-                    // Open the native login screen only after the free public
-                    // routes have failed. The next tap on the download button
-                    // will reuse the private cookie jar.
+                val had403 = errors.any { it.contains("403") }
+                if (!hasCookies && had403) {
                     runCatching {
                         appContext.startActivity(
                             Intent(appContext, YouTubeAuthActivity::class.java)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     }
                 }
@@ -181,18 +167,18 @@ class YtDlpDownloadEngine(context: Context) {
                             append("\n\nTentativas:\n")
                             append(errors.joinToString("\n"))
                         }
-                        if (!hasCookies && errors.any { it.contains("403") }) {
+                        if (!hasCookies && had403) {
                             append("\n\nO YouTube bloqueou os streams públicos com HTTP 403.")
-                            append("\nA tela de autenticação foi aberta. Faça login e salve a autenticação; depois toque novamente em ‘Testar download’.")
+                            append("\nFaça login em ‘Entrar no YouTube’, salve os cookies e tente novamente.")
                         }
-                    }
+                    },
                 )
             } catch (error: Throwable) {
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
                     outputDirectory = null,
-                    message = "${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
+                    message = "${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}",
                 )
             }
         }
@@ -202,5 +188,5 @@ data class DownloadExecutionResult(
     val success: Boolean,
     val exitCode: Int,
     val outputDirectory: String?,
-    val message: String
+    val message: String,
 )
