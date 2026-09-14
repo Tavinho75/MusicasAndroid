@@ -1,22 +1,21 @@
 package com.example.downloaderandroid.core
 
 import android.content.Context
-import dev.ffmpegkit_maintained.ytdlp.YtDlp
-import dev.ffmpegkit_maintained.ytdlp.YtDlpException
+import com.yausername.youtubedl_android.YoutubeDLException
 
 class YtDlpExtractorEngine(
     context: Context
 ) : ExtractorEngine {
 
-    private val appContext = context.applicationContext
-
     private val initialized: Boolean
 
     init {
         initialized = try {
-            YtDlp.init(appContext)
+            SealCompatibleDownloaderBackend.init(context)
             true
-        } catch (error: YtDlpException) {
+        } catch (error: YoutubeDLException) {
+            false
+        } catch (error: Throwable) {
             false
         }
     }
@@ -25,12 +24,12 @@ class YtDlpExtractorEngine(
         if (initialized) {
             ExtractorProbeResult(
                 initialized = true,
-                message = "yt-dlp-android inicializado; integração Kotlin → ExtractorEngine disponível."
+                message = "youtubedl-android inicializado; integração Kotlin → ExtractorEngine disponível."
             )
         } else {
             ExtractorProbeResult(
                 initialized = false,
-                message = "Falha ao inicializar yt-dlp-android."
+                message = "Falha ao inicializar o backend youtubedl-android."
             )
         }
 }
