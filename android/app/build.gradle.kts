@@ -34,6 +34,15 @@ android {
         }
     }
 
+    // youtubedl-android/Seal requires native libraries to be unpacked on
+    // device. With current Android Gradle Plugin versions this must be
+    // configured here instead of android:extractNativeLibs in the manifest.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
