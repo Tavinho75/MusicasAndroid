@@ -63,10 +63,11 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
-    // Same youtubedl-android release currently used by Seal.
-    implementation("io.github.junkfood02.youtubedl-android:library:0.17.3")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.17.3")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.17.3")
+    // Update from the older Seal-matched release: 0.18.1 adds QuickJS,
+    // which is required by current yt-dlp YouTube signature extraction.
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")
 
     // Keep the already validated FFmpegKit dependency for the existing
     // Phase 1.1 WAV -> MP3 validation path.
