@@ -109,8 +109,8 @@ class YtDlpDownloadEngine(context: Context) {
                         request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
                     }
 
-                    attempt.extractorArgs?.let {
-                        request.addOption("--extractor-args", it)
+                    attempt.extractorArgs?.let { extractorArgs ->
+                        request.addOption("--extractor-args", extractorArgs)
                     }
 
                     try {
@@ -131,9 +131,10 @@ class YtDlpDownloadEngine(context: Context) {
                         errors += "${attempt.label}: código ${response.exitCode}"
                         response.err
                             .lineSequence()
-                            .filter { it.isNotBlank() }
+                            .filter { line -> line.isNotBlank() }
+                            .toList()
                             .takeLast(3)
-                            .forEach { errors += "  $it" }
+                            .forEach { line -> errors += "  $line" }
                     } catch (error: YoutubeDLException) {
                         errors += "${attempt.label}: ${error.message ?: "falha sem mensagem"}"
                     } catch (error: YoutubeDL.CanceledException) {
