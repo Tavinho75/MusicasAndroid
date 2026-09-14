@@ -36,7 +36,10 @@ class YtDlpDownloadEngine(context: Context) {
     suspend fun downloadBestAudio(url: String): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
             try {
+                // Local/native initialization is safe here, while the network
+                // update is explicitly kept on Dispatchers.IO.
                 SealCompatibleDownloaderBackend.init(appContext)
+                SealCompatibleDownloaderBackend.ensureYtDlpUpdated(appContext)
 
                 val outputDirectory = File(
                     requireNotNull(appContext.getExternalFilesDir(null)) {
