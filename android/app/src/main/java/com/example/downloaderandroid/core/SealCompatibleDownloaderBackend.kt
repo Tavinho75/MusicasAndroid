@@ -6,11 +6,9 @@ import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 
 /**
- * Initializes the same native Android backend family used by Seal:
- * youtubedl-android + its bundled FFmpeg + aria2c modules.
- *
- * This intentionally keeps the initialization isolated from the UI so the
- * existing Phase 1/2 state machine can continue to evolve independently.
+ * Initializes the same youtubedl-android backend family used by Seal.
+ * Initialization is intentionally isolated from the UI and from the existing
+ * Phase 1/2 state machine.
  */
 object SealCompatibleDownloaderBackend {
 
@@ -22,9 +20,12 @@ object SealCompatibleDownloaderBackend {
         if (initialized) return
 
         val appContext = context.applicationContext
-        YoutubeDL.getInstance().init(appContext)
-        FFmpeg.getInstance().init(appContext)
-        Aria2c.getInstance().init(appContext)
+
+        // Match Seal's current initialization order/API exactly.
+        YoutubeDL.init(appContext)
+        FFmpeg.init(appContext)
+        Aria2c.init(appContext)
+
         initialized = true
     }
 }
