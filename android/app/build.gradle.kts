@@ -54,12 +54,10 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
-    // Seal-compatible yt-dlp Android backend. This provides the same
-    // YoutubeDLRequest/YoutubeDL execution model used by Seal, including
-    // bundled Python/yt-dlp, QuickJS support, and ffmpeg/aria2c integration.
-    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")
+    // Same youtubedl-android release currently used by Seal.
+    implementation("io.github.junkfood02.youtubedl-android:library:0.17.3")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.17.3")
+    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.17.3")
 
     // Keep the already validated FFmpegKit dependency for the existing
     // Phase 1.1 WAV -> MP3 validation path.
