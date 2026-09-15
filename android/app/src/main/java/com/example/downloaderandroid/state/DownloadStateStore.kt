@@ -6,14 +6,16 @@ import org.json.JSONObject
 /**
  * Persistência mínima da camada Android.
  *
- * Nesta etapa não existe fila nem agendador de downloads. O store persiste
- * apenas o estado da operação corrente, para validar a arquitetura onde o
- * estado permanece nativamente e não na camada HTML/JavaScript.
+ * A preferência usada pelo store pode ser nomeada para manter o estado de
+ * testes isolado do estado real de um download em segundo plano.
  */
-class DownloadStateStore(context: Context) {
+class DownloadStateStore(
+    context: Context,
+    preferencesName: String = PREFERENCES_NAME,
+) {
 
     private val preferences = context.applicationContext
-        .getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+        .getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
 
     fun save(state: DownloadTaskState) {
         preferences.edit()
@@ -53,7 +55,7 @@ class DownloadStateStore(context: Context) {
             status = DownloadTaskStatus.valueOf(json.getString("status")),
             title = json.optString("title").takeIf { it.isNotBlank() },
             detail = json.optString("detail").takeIf { it.isNotBlank() },
-            updatedAtEpochMillis = json.getLong("updatedAtEpochMillis")
+            updatedAtEpochMillis = json.getLong("updatedAtEpochMillis"),
         )
     }
 
