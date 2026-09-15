@@ -3,15 +3,20 @@ package com.example.downloaderandroid.state
 import android.content.Context
 
 /**
- * Camada nativa responsável por manter uma única tarefa corrente.
+ * Camada nativa responsável por manter uma tarefa corrente.
  *
- * Não é uma fila e não executa downloads. Centraliza apenas persistência e
- * transições válidas para que as futuras camadas de execução não manipulem
- * SharedPreferences ou estados arbitrariamente.
+ * O nome do armazenamento pode ser separado para que testes e o download real
+ * em segundo plano não sobrescrevam o estado um do outro.
  */
-class NativeDownloadTaskRepository(context: Context) {
+class NativeDownloadTaskRepository(
+    context: Context,
+    preferencesName: String = DEFAULT_PREFERENCES_NAME,
+) {
 
-    private val store = DownloadStateStore(context.applicationContext)
+    private val store = DownloadStateStore(
+        context.applicationContext,
+        preferencesName,
+    )
 
     fun create(state: DownloadTaskState): DownloadTaskState {
         check(state.status == DownloadTaskStatus.DRAFT) {
@@ -27,7 +32,7 @@ class NativeDownloadTaskRepository(context: Context) {
     fun transition(
         target: DownloadTaskStatus,
         detail: String? = current()?.detail,
-        updatedAtEpochMillis: Long = System.currentTimeMillis()
+        updatedAtEpochMillis: Long = System.currentTimeMillis(),
     ): DownloadTaskState {
         val currentState = requireNotNull(store.load()) {
             "Nenhuma tarefa nativa disponível para transição."
@@ -37,7 +42,7 @@ class NativeDownloadTaskRepository(context: Context) {
             state = currentState,
             target = target,
             detail = detail,
-            updatedAtEpochMillis = updatedAtEpochMillis
+            updatedAtEpochMillis = updatedAtEpochMillis,
         )
 
         store.save(nextState)
@@ -46,5 +51,10 @@ class NativeDownloadTaskRepository(context: Context) {
 
     fun clear() {
         store.clear()
+    }
+
+    companion object {
+        const val DEFAULT_PREFERENCES_NAME = "downloader_native_state"
+        const val ACTIVE_DOWNLOAD_PREFERENCES_NAME = "downloader_active_download"
     }
 }
