@@ -23,8 +23,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Phase 4.1: keeps a real download alive when MainActivity is no longer
- * visible. The download state remains in the native repository and the user
- * receives a persistent foreground notification.
+ * visible. The active download has its own persistent native state and a
+ * foreground notification.
  *
  * This first background step intentionally handles one active task. A real
  * persistent queue and concurrent downloads are added in the next queue step.
@@ -36,7 +36,10 @@ class DownloadForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        repository = NativeDownloadTaskRepository(applicationContext)
+        repository = NativeDownloadTaskRepository(
+            applicationContext,
+            NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
+        )
         createNotificationChannel()
     }
 
@@ -154,8 +157,7 @@ class DownloadForegroundService : Service() {
     }
 
     private fun updateNotification(text: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(
+        getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID,
             buildNotification(
                 title = "MusicasAndroid",
@@ -167,8 +169,7 @@ class DownloadForegroundService : Service() {
     }
 
     private fun showFinishedNotification(title: String, text: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(
+        getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID,
             buildNotification(
                 title = title,
@@ -205,8 +206,7 @@ class DownloadForegroundService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 "Downloads de música",
