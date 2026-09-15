@@ -25,9 +25,6 @@ import kotlinx.coroutines.launch
  * Phase 4.1: keeps a real download alive when MainActivity is no longer
  * visible. The active download has its own persistent native state and a
  * foreground notification.
- *
- * This first background step intentionally handles one active task. A real
- * persistent queue and concurrent downloads are added in the next queue step.
  */
 class DownloadForegroundService : Service() {
 
@@ -54,6 +51,7 @@ class DownloadForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        // The foreground notification is created before any network or yt-dlp work.
         startForegroundWithNotification("Preparando download…")
 
         serviceScope.launch {
@@ -189,10 +187,17 @@ class DownloadForegroundService : Service() {
         .setSmallIcon(android.R.drawable.stat_sys_download)
         .setContentTitle(title)
         .setContentText(text)
+        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
         .setOngoing(ongoing)
         .setOnlyAlertOnce(true)
         .setAutoCancel(!ongoing)
         .setProgress(0, 0, indeterminate)
+        .apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            }
+        }
         .setContentIntent(
             PendingIntent.getActivity(
                 this,
@@ -206,11 +211,13 @@ class DownloadForegroundService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
+        // v2 deliberately uses a new channel ID. Android does not allow an app
+        // to programmatically raise the importance of an already-created channel.
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 "Downloads de música",
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "Downloads de áudio em segundo plano."
             }
@@ -229,7 +236,7 @@ class DownloadForegroundService : Service() {
         const val EXTRA_URL = "extra_url"
         const val EXTRA_TASK_ID = "extra_task_id"
 
-        private const val CHANNEL_ID = "music_downloads"
+        private const val CHANNEL_ID = "music_downloads_v2"
         private const val NOTIFICATION_ID = 4101
 
         fun start(context: Context, url: String, taskId: String) {
