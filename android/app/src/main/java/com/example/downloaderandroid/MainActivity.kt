@@ -35,14 +35,15 @@ import androidx.compose.ui.unit.dp
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
+import com.example.downloaderandroid.core.DownloadForegroundService
 import com.example.downloaderandroid.core.ExtractorProbeResult
-import com.example.downloaderandroid.core.YtDlpDownloadEngine
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
-import com.example.downloaderandroid.state.DownloadTaskState
 import com.example.downloaderandroid.state.DownloadTaskStatus
+import com.example.downloaderandroid.state.DownloadTaskState
 import com.example.downloaderandroid.state.NativeDownloadTaskRepository
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -63,7 +64,7 @@ class MainActivity : ComponentActivity() {
             DownloaderAndroidTheme {
                 var preflightStatus by mutableStateOf("Executando testes da FASE 1.1…")
                 var urlInput by mutableStateOf("")
-                var phase3Status by mutableStateOf("FASE 3 pronta para testar um download real.")
+                var phase3Status by mutableStateOf("FASE 4.1 pronta para download em segundo plano.")
                 var isDownloading by mutableStateOf(false)
                 val scope = rememberCoroutineScope()
 
@@ -77,7 +78,7 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("FASE 1.1 + FASE 2 + FASE 3", textAlign = TextAlign.Center)
+                        Text("FASE 1.1 + FASE 2 + FASE 3 + FASE 4.1", textAlign = TextAlign.Center)
 
                         Text(
                             text = preflightStatus,
@@ -106,7 +107,7 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.height(32.dp))
 
                         Text(
-                            text = "FASE 3 — Download real de áudio",
+                            text = "FASE 4.1 — Download em segundo plano",
                             textAlign = TextAlign.Center
                         )
 
@@ -126,21 +127,19 @@ class MainActivity : ComponentActivity() {
                                 val requestedUrl = urlInput.trim()
 
                                 if (requestedUrl.isBlank()) {
-                                    phase3Status = "❌ FASE 3: cole uma URL antes de iniciar."
+                                    phase3Status = "❌ FASE 4.1: cole uma URL antes de iniciar."
                                     return@Button
                                 }
 
                                 scope.launch {
-                                    isDownloading = true
-                                    phase3Status = "🔄 FASE 3: preparando download…"
-                                    phase3Status = runPhase3Download(requestedUrl)
-                                    isDownloading = false
+                                    phase3Status = "🔄 FASE 4.1: iniciando serviço em segundo plano…"
+                                    phase3Status = startBackgroundDownload(requestedUrl)
                                 }
                             },
                             modifier = Modifier.padding(top = 12.dp),
                             enabled = !isDownloading
                         ) {
-                            Text(if (isDownloading) "Baixando…" else "Testar download")
+                            Text(if (isDownloading) "Baixando em segundo plano…" else "Iniciar download")
                         }
 
                         if (isDownloading) {
@@ -158,6 +157,47 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
+                    val activeRepository = NativeDownloadTaskRepository(
+                        applicationContext,
+                        NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
+                    )
+
+                    while (true) {
+                        val active = activeRepository.current()
+                        when (active?.status) {
+                            DownloadTaskStatus.DRAFT,
+                            DownloadTaskStatus.ANALYZING,
+                            DownloadTaskStatus.READY,
+                            DownloadTaskStatus.DOWNLOADING,
+                            DownloadTaskStatus.PROCESSING -> {
+                                isDownloading = true
+                                phase3Status = "🔄 FASE 4.1: ${active.detail ?: "download em segundo plano…"}"
+                            }
+
+                            DownloadTaskStatus.COMPLETED -> {
+                                isDownloading = false
+                                phase3Status = "✅ FASE 4.1: download concluído\n\n${active.detail ?: "Música salva na pasta Music/MusicasAndroid."}"
+                            }
+
+                            DownloadTaskStatus.FAILED -> {
+                                isDownloading = false
+                                phase3Status = "❌ FASE 4.1: download falhou\n\n${active.detail ?: "Falha sem detalhes."}"
+                            }
+
+                            DownloadTaskStatus.CANCELLED -> {
+                                isDownloading = false
+                                phase3Status = "⚠️ FASE 4.1: download cancelado."
+                            }
+
+                            null -> {
+                                isDownloading = false
+                            }
+                        }
+                        delay(750L)
+                    }
+                }
+
+                LaunchedEffect("preflight") {
                     val phase11 = runPhase11Tests()
 
                     preflightStatus = if (phase11.startsWith("❌")) {
@@ -187,51 +227,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun runPhase3Download(url: String): String {
+    private suspend fun startBackgroundDownload(url: String): String {
         val parsed = runCatching { Uri.parse(url) }.getOrNull()
         val scheme = parsed?.scheme?.lowercase()
 
         if (scheme != "http" && scheme != "https") {
-            return "❌ FASE 3: informe uma URL HTTP ou HTTPS válida."
+            return "❌ FASE 4.1: informe uma URL HTTP ou HTTPS válida."
         }
 
-        val repository = NativeDownloadTaskRepository(applicationContext)
+        val activeRepository = NativeDownloadTaskRepository(
+            applicationContext,
+            NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
+        )
+        val current = activeRepository.current()
 
-        return try {
-            repository.clear()
-            val taskId = "phase3-" + UUID.randomUUID().toString()
-
-            repository.create(
-                DownloadTaskState(
-                    id = taskId,
-                    url = url,
-                    status = DownloadTaskStatus.DRAFT,
-                    title = "Download real de teste",
-                    detail = "URL recebida pelo aplicativo."
-                )
+        if (current?.status in setOf(
+                DownloadTaskStatus.DRAFT,
+                DownloadTaskStatus.ANALYZING,
+                DownloadTaskStatus.READY,
+                DownloadTaskStatus.DOWNLOADING,
+                DownloadTaskStatus.PROCESSING,
             )
-            repository.transition(DownloadTaskStatus.ANALYZING, detail = "Preparando yt-dlp.")
-            repository.transition(DownloadTaskStatus.READY, detail = "Motor pronto para iniciar o download.")
-            repository.transition(DownloadTaskStatus.DOWNLOADING, detail = "yt-dlp baixando o melhor áudio disponível.")
+        ) {
+            return "🔄 Já existe um download em andamento. Acompanhe-o pela notificação do MusicasAndroid."
+        }
 
-            val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(url)
-
-            if (result.success) {
-                repository.transition(DownloadTaskStatus.PROCESSING, detail = "Download concluído; validando resultado.")
-                repository.transition(DownloadTaskStatus.COMPLETED, detail = result.message)
-                "✅ FASE 3: download real concluído\n\n${result.message}\n\nPasta temporária desta fase:\n${result.outputDirectory ?: "indisponível"}"
-            } else {
-                repository.transition(DownloadTaskStatus.FAILED, detail = result.message)
-                "❌ FASE 3: download falhou\n\n${result.message}\n\nCódigo do yt-dlp: ${result.exitCode}"
-            }
+        val taskId = "phase4-" + UUID.randomUUID().toString()
+        return try {
+            DownloadForegroundService.start(
+                context = applicationContext,
+                url = url,
+                taskId = taskId,
+            )
+            "🔄 FASE 4.1: download iniciado em segundo plano.\n\nVocê pode sair do aplicativo; o download continuará pelo serviço em primeiro plano.\n\nUma notificação será exibida durante a operação."
         } catch (error: Throwable) {
-            Log.e("Phase3Download", "Falha no download real", error)
-            runCatching {
-                if (repository.current()?.status == DownloadTaskStatus.DOWNLOADING) {
-                    repository.transition(DownloadTaskStatus.FAILED, detail = error.message ?: "Falha inesperada.")
-                }
-            }
-            "❌ FASE 3: ${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
+            Log.e("Phase4Background", "Não foi possível iniciar o serviço", error)
+            "❌ FASE 4.1: ${error.javaClass.simpleName}: ${error.message ?: "falha ao iniciar o serviço"}"
         }
     }
 
