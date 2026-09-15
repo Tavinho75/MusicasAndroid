@@ -8,6 +8,7 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -90,7 +91,7 @@ class MainActivity : ComponentActivity() {
                                 phase3Logs = "Permissão de notificações concedida.\nIniciando Foreground Service."
                             } else {
                                 phase3Status = "⚠️ FASE 4.1: notificações não autorizadas; iniciando download mesmo assim."
-                                phase3Logs = "O Android não concedeu POST_NOTIFICATIONS. O download continuará, mas a notificação pode não aparecer na gaveta."
+                                phase3Logs = "POST_NOTIFICATIONS não foi concedida. O download continuará, mas a notificação pode ficar oculta."
                             }
                             val result = startBackgroundDownload(requestedUrl)
                             phase3Status = result
@@ -111,13 +112,54 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("FASE 1.1 + FASE 2 + FASE 3 + FASE 4.1", textAlign = TextAlign.Center)
 
-                        Text(
-                            text = preflightStatus,
-                            modifier = Modifier.padding(top = 16.dp),
-                            textAlign = TextAlign.Center
-                        )
+                        Button(
+                            onClick = { showLogs = !showLogs },
+                            modifier = Modifier.padding(top = 16.dp)
+                        ) {
+                            Text(if (showLogs) "Ocultar logs das fases" else "Mostrar logs das fases")
+                        }
 
-                        Spacer(modifier = Modifier.height(24.dp))
+                        if (showLogs) {
+                            Text(
+                                text = preflightStatus,
+                                modifier = Modifier.padding(top = 12.dp),
+                                textAlign = TextAlign.Start
+                            )
+                            if (phase3Logs.isNotBlank()) {
+                                Text(
+                                    text = "\n--- FASE 4.1 ---\n$phase3Logs",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 8.dp),
+                                    textAlign = TextAlign.Start
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        Button(
+                            onClick = {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(
+                                        this@MainActivity,
+                                        Manifest.permission.POST_NOTIFICATIONS,
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    startActivity(
+                                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                                        }
+                                    )
+                                }
+                            }
+                        ) {
+                            Text("Ativar / configurar notificações")
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
                             onClick = {
@@ -202,25 +244,6 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(top = 16.dp),
                             textAlign = TextAlign.Center
                         )
-
-                        if (phase3Logs.isNotBlank()) {
-                            Button(
-                                onClick = { showLogs = !showLogs },
-                                modifier = Modifier.padding(top = 12.dp),
-                            ) {
-                                Text(if (showLogs) "Ocultar logs" else "Mostrar logs")
-                            }
-
-                            if (showLogs) {
-                                Text(
-                                    text = phase3Logs,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 8.dp),
-                                    textAlign = TextAlign.Start
-                                )
-                            }
-                        }
                     }
                 }
 
