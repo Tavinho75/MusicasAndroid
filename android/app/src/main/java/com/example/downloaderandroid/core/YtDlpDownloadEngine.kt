@@ -1,7 +1,10 @@
 package com.example.downloaderandroid.core
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.os.Environment
+import android.provider.MediaStore
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
 import com.example.downloaderandroid.auth.YouTubeCookieStore
 import com.yausername.youtubedl_android.YoutubeDL
@@ -14,10 +17,9 @@ import java.io.File
 /**
  * Real audio download engine used by the Phase 3 test harness.
  *
- * The execution layer now follows Seal's backend model: YoutubeDLRequest is
- * executed through youtubedl-android, whose runtime supplies Python/yt-dlp,
- * QuickJS, and the ffmpeg/aria2c integration. We keep our own small engine so
- * the rest of MusicasAndroid does not depend on Seal's UI/database classes.
+ * yt-dlp downloads into the app-private temporary directory first. Successful
+ * MP3 files are then published through MediaStore into the public Music folder,
+ * where normal music players such as MX Player can discover them.
  *
  * Cookies remain in app-private storage and are passed directly to yt-dlp;
  * they never enter the Compose/JavaScript layer and are never logged.
@@ -36,21 +38,24 @@ class YtDlpDownloadEngine(context: Context) {
     suspend fun downloadBestAudio(url: String): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
             try {
-                // Local/native initialization is safe here, while the network
-                // update is explicitly kept on Dispatchers.IO.
                 SealCompatibleDownloaderBackend.init(appContext)
                 SealCompatibleDownloaderBackend.ensureYtDlpUpdated(appContext)
 
-                val outputDirectory = File(
+                val temporaryDirectory = File(
                     requireNotNull(appContext.getExternalFilesDir(null)) {
                         "Armazenamento externo do aplicativo indisponível."
                     },
                     "phase3-downloads",
                 ).apply {
                     if (!exists() && !mkdirs()) {
-                        error("Não foi possível criar a pasta de downloads.")
+                        error("Não foi possível criar a pasta temporária de downloads.")
                     }
                 }
+
+                // Also publishes MP3s from previous Phase 3 tests. This lets
+                // the three files already downloaded by the user be migrated
+                // the next time a download is started.
+                val previousFiles = publishMp3Files(temporaryDirectory)
 
                 val hasCookies = cookieStore.hasCookies()
                 val attempts = buildList {
@@ -63,13 +68,7 @@ class YtDlpDownloadEngine(context: Context) {
                         )
                     }
 
-                    // Keep the public fallback routes from the previous test,
-                    // but execute them through the Seal-compatible backend.
-                    add(
-                        DownloadAttempt(
-                            label = "YouTube padrão",
-                        )
-                    )
+                    add(DownloadAttempt(label = "YouTube padrão"))
                     add(
                         DownloadAttempt(
                             label = "Android VR",
@@ -88,7 +87,7 @@ class YtDlpDownloadEngine(context: Context) {
 
                 for (attempt in attempts) {
                     val outputTemplate = File(
-                        outputDirectory,
+                        temporaryDirectory,
                         "%(title)s.%(ext)s",
                     ).absolutePath
 
@@ -123,11 +122,18 @@ class YtDlpDownloadEngine(context: Context) {
                         )
 
                         if (response.exitCode == 0) {
+                            val published = publishMp3Files(temporaryDirectory)
+                            val totalPublished = previousFiles + published
                             return@withContext DownloadExecutionResult(
                                 success = true,
                                 exitCode = response.exitCode,
-                                outputDirectory = outputDirectory.absolutePath,
-                                message = "Download concluído usando ${attempt.label}.",
+                                outputDirectory = MUSIC_DIRECTORY_DESCRIPTION,
+                                message = if (totalPublished > 0) {
+                                    "Download concluído usando ${attempt.label}. " +
+                                        "Música salva em $MUSIC_DIRECTORY_DESCRIPTION."
+                                } else {
+                                    "Download concluído usando ${attempt.label}."
+                                },
                             )
                         }
 
@@ -164,7 +170,7 @@ class YtDlpDownloadEngine(context: Context) {
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
-                    outputDirectory = outputDirectory.absolutePath,
+                    outputDirectory = temporaryDirectory.absolutePath,
                     message = buildString {
                         append("Nenhuma tentativa conseguiu baixar o áudio.")
                         if (errors.isNotEmpty()) {
@@ -186,6 +192,66 @@ class YtDlpDownloadEngine(context: Context) {
                 )
             }
         }
+
+    /**
+     * Copies MP3s from the temporary app directory into the public Android
+     * Music collection. MediaStore makes the files visible to music players
+     * without requiring broad storage permissions on Android 10+.
+     */
+    private fun publishMp3Files(directory: File): Int {
+        if (!directory.exists()) return 0
+
+        var publishedCount = 0
+        directory.listFiles()
+            ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
+            ?.forEach { source ->
+                val values = ContentValues().apply {
+                    put(MediaStore.Audio.Media.DISPLAY_NAME, source.name)
+                    put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
+                    put(
+                        MediaStore.Audio.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_MUSIC + "/MusicasAndroid",
+                    )
+                    put(MediaStore.Audio.Media.IS_PENDING, 1)
+                }
+
+                val resolver = appContext.contentResolver
+                val uri = resolver.insert(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    values,
+                ) ?: return@forEach
+
+                try {
+                    resolver.openOutputStream(uri)?.use { output ->
+                        source.inputStream().use { input -> input.copyTo(output) }
+                    } ?: error("Não foi possível abrir o arquivo de música de destino.")
+
+                    resolver.update(
+                        uri,
+                        ContentValues().apply {
+                            put(MediaStore.Audio.Media.IS_PENDING, 0)
+                        },
+                        null,
+                        null,
+                    )
+
+                    if (!source.delete()) {
+                        // The public copy is already complete, so leaving the
+                        // temporary file is safe and does not invalidate it.
+                    }
+                    publishedCount++
+                } catch (error: Throwable) {
+                    resolver.delete(uri, null, null)
+                }
+            }
+
+        return publishedCount
+    }
+
+    companion object {
+        private const val MUSIC_DIRECTORY_DESCRIPTION =
+            "Armazenamento interno compartilhado/Music/MusicasAndroid"
+    }
 }
 
 data class DownloadExecutionResult(
