@@ -1,14 +1,19 @@
 package com.example.downloaderandroid
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
@@ -65,8 +71,33 @@ class MainActivity : ComponentActivity() {
                 var preflightStatus by mutableStateOf("Executando testes da FASE 1.1…")
                 var urlInput by mutableStateOf("")
                 var phase3Status by mutableStateOf("FASE 4.1 pronta para download em segundo plano.")
+                var phase3Logs by mutableStateOf("")
+                var showLogs by mutableStateOf(false)
                 var isDownloading by mutableStateOf(false)
+                var pendingNotificationUrl by mutableStateOf<String?>(null)
                 val scope = rememberCoroutineScope()
+
+                val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    val requestedUrl = pendingNotificationUrl
+                    pendingNotificationUrl = null
+
+                    if (requestedUrl != null) {
+                        scope.launch {
+                            if (granted) {
+                                phase3Status = "🔄 FASE 4.1: permissão concedida; iniciando serviço…"
+                                phase3Logs = "Permissão de notificações concedida.\nIniciando Foreground Service."
+                            } else {
+                                phase3Status = "⚠️ FASE 4.1: notificações não autorizadas; iniciando download mesmo assim."
+                                phase3Logs = "O Android não concedeu POST_NOTIFICATIONS. O download continuará, mas a notificação pode não aparecer na gaveta."
+                            }
+                            val result = startBackgroundDownload(requestedUrl)
+                            phase3Status = result
+                            phase3Logs = result
+                        }
+                    }
+                }
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Column(
@@ -128,12 +159,30 @@ class MainActivity : ComponentActivity() {
 
                                 if (requestedUrl.isBlank()) {
                                     phase3Status = "❌ FASE 4.1: cole uma URL antes de iniciar."
+                                    phase3Logs = phase3Status
                                     return@Button
                                 }
 
                                 scope.launch {
-                                    phase3Status = "🔄 FASE 4.1: iniciando serviço em segundo plano…"
-                                    phase3Status = startBackgroundDownload(requestedUrl)
+                                    phase3Status = "🔄 FASE 4.1: verificando permissão de notificações…"
+                                    phase3Logs = phase3Status
+
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                        ContextCompat.checkSelfPermission(
+                                            this@MainActivity,
+                                            Manifest.permission.POST_NOTIFICATIONS,
+                                        ) != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        pendingNotificationUrl = requestedUrl
+                                        phase3Status = "🔔 O Android vai pedir permissão para mostrar a notificação do download."
+                                        phase3Logs = phase3Status
+                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    } else {
+                                        phase3Status = "🔄 FASE 4.1: iniciando serviço em segundo plano…"
+                                        val result = startBackgroundDownload(requestedUrl)
+                                        phase3Status = result
+                                        phase3Logs = result
+                                    }
                                 }
                             },
                             modifier = Modifier.padding(top = 12.dp),
@@ -153,6 +202,25 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(top = 16.dp),
                             textAlign = TextAlign.Center
                         )
+
+                        if (phase3Logs.isNotBlank()) {
+                            Button(
+                                onClick = { showLogs = !showLogs },
+                                modifier = Modifier.padding(top = 12.dp),
+                            ) {
+                                Text(if (showLogs) "Ocultar logs" else "Mostrar logs")
+                            }
+
+                            if (showLogs) {
+                                Text(
+                                    text = phase3Logs,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 8.dp),
+                                    textAlign = TextAlign.Start
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -171,22 +239,29 @@ class MainActivity : ComponentActivity() {
                             DownloadTaskStatus.DOWNLOADING,
                             DownloadTaskStatus.PROCESSING -> {
                                 isDownloading = true
-                                phase3Status = "🔄 FASE 4.1: ${active.detail ?: "download em segundo plano…"}"
+                                val detail = active.detail ?: "download em segundo plano…"
+                                phase3Status = "🔄 FASE 4.1: $detail"
+                                phase3Logs = detail
                             }
 
                             DownloadTaskStatus.COMPLETED -> {
                                 isDownloading = false
-                                phase3Status = "✅ FASE 4.1: download concluído\n\n${active.detail ?: "Música salva na pasta Music/MusicasAndroid."}"
+                                val detail = active.detail ?: "Música salva na pasta Music/MusicasAndroid."
+                                phase3Status = "✅ FASE 4.1: download concluído\n\n$detail"
+                                phase3Logs = detail
                             }
 
                             DownloadTaskStatus.FAILED -> {
                                 isDownloading = false
-                                phase3Status = "❌ FASE 4.1: download falhou\n\n${active.detail ?: "Falha sem detalhes."}"
+                                val detail = active.detail ?: "Falha sem detalhes."
+                                phase3Status = "❌ FASE 4.1: download falhou"
+                                phase3Logs = detail
                             }
 
                             DownloadTaskStatus.CANCELLED -> {
                                 isDownloading = false
                                 phase3Status = "⚠️ FASE 4.1: download cancelado."
+                                phase3Logs = "Download cancelado."
                             }
 
                             null -> {
