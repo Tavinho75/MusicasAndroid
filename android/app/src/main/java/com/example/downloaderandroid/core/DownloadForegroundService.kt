@@ -19,18 +19,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * Phase 4.1/4.3: keeps a real download alive when MainActivity is no longer
- * visible. The active download has persistent native state and a foreground
- * notification with real yt-dlp progress and ETA.
+ * Keeps a real download alive when MainActivity is no longer visible.
+ * The foreground notification belongs exclusively to this service for the
+ * whole lifetime of the active download.
  */
 class DownloadForegroundService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var repository: NativeDownloadTaskRepository
+    private var activeDownloadJob: Job? = null
+    private var activeStartId: Int = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -44,6 +47,13 @@ class DownloadForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action != ACTION_START) return START_REDELIVER_INTENT
 
+        // A redelivered/duplicate START must not create a second coroutine.
+        // Otherwise one coroutine could call stopForeground() while another
+        // download is still running, making the notification disappear.
+        if (activeDownloadJob?.isActive == true) {
+            return START_REDELIVER_INTENT
+        }
+
         val url = intent.getStringExtra(EXTRA_URL)?.trim()
         val taskId = intent.getStringExtra(EXTRA_TASK_ID)
 
@@ -52,9 +62,10 @@ class DownloadForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        activeStartId = startId
         startForegroundWithNotification("Preparando download…", null, null)
 
-        serviceScope.launch {
+        activeDownloadJob = serviceScope.launch {
             runDownload(url, taskId, startId)
         }
 
@@ -150,15 +161,19 @@ class DownloadForegroundService : Service() {
                 "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}",
             )
         } finally {
-            // The active foreground notification is removed only when the work
-            // has actually finished. MainActivity never owns its lifetime.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
+            // Only the coroutine that owns the current service start may end
+            // the foreground lifetime. This prevents a duplicate start from
+            // removing the notification belonging to another active job.
+            if (activeStartId == startId) {
+                activeDownloadJob = null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+                stopSelf(startId)
             }
-            stopSelf(startId)
         }
     }
 
@@ -183,8 +198,8 @@ class DownloadForegroundService : Service() {
         progressPercent: Float?,
         etaSeconds: Long?,
     ) {
-        // Re-assert the notification as the service's active foreground
-        // notification while updating the real yt-dlp progress.
+        // Re-assert the same foreground notification ID on every progress
+        // update. The service, not MainActivity, owns its visibility.
         startForegroundCompat(
             buildNotification(
                 title = "MusicasAndroid",
@@ -315,6 +330,7 @@ class DownloadForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        activeDownloadJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()
     }
