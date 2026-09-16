@@ -6,5 +6,7 @@ data class DownloadTaskState(
     val status: DownloadTaskStatus,
     val title: String? = null,
     val detail: String? = null,
+    val progressPercent: Float? = null,
+    val etaSeconds: Long? = null,
     val updatedAtEpochMillis: Long = System.currentTimeMillis()
 )
