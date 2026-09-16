@@ -20,11 +20,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
- * Phase 4.1: keeps a real download alive when MainActivity is no longer
- * visible. The active download has its own persistent native state and a
- * foreground notification.
+ * Phase 4.1/4.3: keeps a real download alive when MainActivity is no longer
+ * visible. The active download has persistent native state and a foreground
+ * notification with real yt-dlp progress and ETA.
  */
 class DownloadForegroundService : Service() {
 
@@ -51,10 +52,7 @@ class DownloadForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        // Re-assert the foreground notification immediately. The notification
-        // is kept associated with the running foreground service while work is
-        // active; MainActivity is never required for its lifetime.
-        startForegroundWithNotification("Preparando download…")
+        startForegroundWithNotification("Preparando download…", null, null)
 
         serviceScope.launch {
             runDownload(url, taskId, startId)
@@ -79,7 +77,7 @@ class DownloadForegroundService : Service() {
                 DownloadTaskStatus.ANALYZING,
                 detail = "Preparando yt-dlp em segundo plano.",
             )
-            updateForegroundNotification("Analisando link…")
+            updateForegroundNotification("Analisando link…", null, null)
             repository.transition(
                 DownloadTaskStatus.READY,
                 detail = "Motor pronto para iniciar o download.",
@@ -88,16 +86,36 @@ class DownloadForegroundService : Service() {
                 DownloadTaskStatus.DOWNLOADING,
                 detail = "Download em segundo plano.",
             )
-            updateForegroundNotification("Baixando áudio…")
+            updateForegroundNotification("Baixando áudio…", null, null)
 
-            val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(url)
+            val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(
+                url = url,
+            ) { progress, etaSeconds, line ->
+                val safeProgress = progress.coerceIn(0f, 100f)
+                val progressText = formatProgress(safeProgress, etaSeconds)
+                val detail = line.trim().takeIf { it.isNotBlank() } ?: progressText
+
+                runCatching {
+                    repository.updateProgress(
+                        progressPercent = safeProgress,
+                        etaSeconds = etaSeconds,
+                        detail = detail,
+                    )
+                }
+
+                updateForegroundNotification(
+                    text = progressText,
+                    progressPercent = safeProgress,
+                    etaSeconds = etaSeconds,
+                )
+            }
 
             if (result.success) {
                 repository.transition(
                     DownloadTaskStatus.PROCESSING,
                     detail = "Download concluído; publicando música.",
                 )
-                updateForegroundNotification("Finalizando música…")
+                updateForegroundNotification("Finalizando música…", 100f, 0L)
                 repository.transition(
                     DownloadTaskStatus.COMPLETED,
                     detail = result.message,
@@ -132,9 +150,8 @@ class DownloadForegroundService : Service() {
                 "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}",
             )
         } finally {
-            // Remove only the foreground-service notification. The completion
-            // notification uses a different ID, so it remains visible after
-            // the service ends.
+            // The active foreground notification is removed only when the work
+            // has actually finished. MainActivity never owns its lifetime.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             } else {
@@ -145,24 +162,38 @@ class DownloadForegroundService : Service() {
         }
     }
 
-    private fun startForegroundWithNotification(text: String) {
-        startForegroundCompat(buildNotification(
-            title = "MusicasAndroid",
-            text = text,
-            ongoing = true,
-            indeterminate = true,
-        ))
+    private fun startForegroundWithNotification(
+        text: String,
+        progressPercent: Float?,
+        etaSeconds: Long?,
+    ) {
+        startForegroundCompat(
+            buildNotification(
+                title = "MusicasAndroid",
+                text = text,
+                ongoing = true,
+                progressPercent = progressPercent,
+                etaSeconds = etaSeconds,
+            )
+        )
     }
 
-    private fun updateForegroundNotification(text: String) {
-        // Calling startForeground again, rather than only NotificationManager.notify(),
-        // reasserts the notification as the service's active foreground notification.
-        startForegroundCompat(buildNotification(
-            title = "MusicasAndroid",
-            text = text,
-            ongoing = true,
-            indeterminate = true,
-        ))
+    private fun updateForegroundNotification(
+        text: String,
+        progressPercent: Float?,
+        etaSeconds: Long?,
+    ) {
+        // Re-assert the notification as the service's active foreground
+        // notification while updating the real yt-dlp progress.
+        startForegroundCompat(
+            buildNotification(
+                title = "MusicasAndroid",
+                text = text,
+                ongoing = true,
+                progressPercent = progressPercent,
+                etaSeconds = etaSeconds,
+            )
+        )
     }
 
     private fun startForegroundCompat(notification: android.app.Notification) {
@@ -184,7 +215,8 @@ class DownloadForegroundService : Service() {
                 title = title,
                 text = text,
                 ongoing = false,
-                indeterminate = false,
+                progressPercent = 100f,
+                etaSeconds = 0L,
             ),
         )
     }
@@ -193,7 +225,8 @@ class DownloadForegroundService : Service() {
         title: String,
         text: String,
         ongoing: Boolean,
-        indeterminate: Boolean,
+        progressPercent: Float?,
+        etaSeconds: Long?,
     ) = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(android.R.drawable.stat_sys_download)
         .setContentTitle(title)
@@ -205,8 +238,15 @@ class DownloadForegroundService : Service() {
         .setAutoCancel(!ongoing)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setShowWhen(false)
-        .setProgress(0, 0, indeterminate)
+        .setProgress(
+            100,
+            progressPercent?.toInt()?.coerceIn(0, 100) ?: 0,
+            progressPercent == null,
+        )
         .apply {
+            if (etaSeconds != null && etaSeconds >= 0L && progressPercent != null) {
+                setSubText("ETA ${formatEta(etaSeconds)}")
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             }
@@ -220,6 +260,26 @@ class DownloadForegroundService : Service() {
             )
         )
         .build()
+
+    private fun formatProgress(progress: Float, etaSeconds: Long): String =
+        String.format(
+            Locale.getDefault(),
+            "Baixando áudio… %.0f%% • ETA %s",
+            progress,
+            if (etaSeconds >= 0L) formatEta(etaSeconds) else "calculando…",
+        )
+
+    private fun formatEta(seconds: Long): String {
+        val safe = seconds.coerceAtLeast(0L)
+        val hours = safe / 3600
+        val minutes = (safe % 3600) / 60
+        val remainingSeconds = safe % 60
+        return if (hours > 0) {
+            String.format(Locale.getDefault(), "%d:%02d:%02d", hours, minutes, remainingSeconds)
+        } else {
+            String.format(Locale.getDefault(), "%02d:%02d", minutes, remainingSeconds)
+        }
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -243,7 +303,6 @@ class DownloadForegroundService : Service() {
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
-        // Android 15+ can impose a six-hour limit on dataSync FGS usage.
         runCatching {
             repository.transition(
                 DownloadTaskStatus.FAILED,
@@ -265,7 +324,7 @@ class DownloadForegroundService : Service() {
         const val EXTRA_URL = "extra_url"
         const val EXTRA_TASK_ID = "extra_task_id"
 
-        private const val CHANNEL_ID = "music_downloads_v3"
+        private const val CHANNEL_ID = "music_downloads_v4"
         private const val FOREGROUND_NOTIFICATION_ID = 4101
         private const val FINISHED_NOTIFICATION_ID = 4102
 
