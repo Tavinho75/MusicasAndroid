@@ -51,16 +51,15 @@ class DownloadForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        // The foreground notification is created before any network or yt-dlp work.
+        // Re-assert the foreground notification immediately. The notification
+        // is kept associated with the running foreground service while work is
+        // active; MainActivity is never required for its lifetime.
         startForegroundWithNotification("Preparando download…")
 
         serviceScope.launch {
             runDownload(url, taskId, startId)
         }
 
-        // Do not tie the service lifetime to MainActivity. If Android recreates
-        // the service after process pressure, the last start Intent is delivered
-        // again so the download can be resumed/recovered from native state.
         return START_REDELIVER_INTENT
     }
 
@@ -80,7 +79,7 @@ class DownloadForegroundService : Service() {
                 DownloadTaskStatus.ANALYZING,
                 detail = "Preparando yt-dlp em segundo plano.",
             )
-            updateNotification("Analisando link…")
+            updateForegroundNotification("Analisando link…")
             repository.transition(
                 DownloadTaskStatus.READY,
                 detail = "Motor pronto para iniciar o download.",
@@ -89,7 +88,7 @@ class DownloadForegroundService : Service() {
                 DownloadTaskStatus.DOWNLOADING,
                 detail = "Download em segundo plano.",
             )
-            updateNotification("Baixando áudio…")
+            updateForegroundNotification("Baixando áudio…")
 
             val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(url)
 
@@ -98,7 +97,7 @@ class DownloadForegroundService : Service() {
                     DownloadTaskStatus.PROCESSING,
                     detail = "Download concluído; publicando música.",
                 )
-                updateNotification("Finalizando música…")
+                updateForegroundNotification("Finalizando música…")
                 repository.transition(
                     DownloadTaskStatus.COMPLETED,
                     detail = result.message,
@@ -133,54 +132,54 @@ class DownloadForegroundService : Service() {
                 "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}",
             )
         } finally {
-            // DETACH removes the service's foreground status but intentionally
-            // leaves its notification posted. This prevents Android from
-            // deleting the visible notification merely because the service is
-            // stopping after completion/failure.
+            // Remove only the foreground-service notification. The completion
+            // notification uses a different ID, so it remains visible after
+            // the service ends.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_DETACH)
+                stopForeground(STOP_FOREGROUND_REMOVE)
             } else {
                 @Suppress("DEPRECATION")
-                stopForeground(false)
+                stopForeground(true)
             }
             stopSelf(startId)
         }
     }
 
     private fun startForegroundWithNotification(text: String) {
-        val notification = buildNotification(
+        startForegroundCompat(buildNotification(
             title = "MusicasAndroid",
             text = text,
             ongoing = true,
             indeterminate = true,
-        )
+        ))
+    }
 
+    private fun updateForegroundNotification(text: String) {
+        // Calling startForeground again, rather than only NotificationManager.notify(),
+        // reasserts the notification as the service's active foreground notification.
+        startForegroundCompat(buildNotification(
+            title = "MusicasAndroid",
+            text = text,
+            ongoing = true,
+            indeterminate = true,
+        ))
+    }
+
+    private fun startForegroundCompat(notification: android.app.Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
-                NOTIFICATION_ID,
+                FOREGROUND_NOTIFICATION_ID,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+            startForeground(FOREGROUND_NOTIFICATION_ID, notification)
         }
-    }
-
-    private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID,
-            buildNotification(
-                title = "MusicasAndroid",
-                text = text,
-                ongoing = true,
-                indeterminate = true,
-            ),
-        )
     }
 
     private fun showFinishedNotification(title: String, text: String) {
         getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID,
+            FINISHED_NOTIFICATION_ID,
             buildNotification(
                 title = title,
                 text = text,
@@ -204,6 +203,8 @@ class DownloadForegroundService : Service() {
         .setOngoing(ongoing)
         .setOnlyAlertOnce(true)
         .setAutoCancel(!ongoing)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .setShowWhen(false)
         .setProgress(0, 0, indeterminate)
         .apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -230,8 +231,26 @@ class DownloadForegroundService : Service() {
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "Downloads de áudio em segundo plano."
+                setShowBadge(false)
             }
         )
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Do not stop or cancel the service when MainActivity is removed from
+        // Recents. The foreground service owns the download lifecycle.
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // Android 15+ can impose a six-hour limit on dataSync FGS usage.
+        runCatching {
+            repository.transition(
+                DownloadTaskStatus.FAILED,
+                detail = "Serviço em primeiro plano atingiu o limite de execução do Android.",
+            )
+        }
+        stopSelf(startId)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -246,8 +265,9 @@ class DownloadForegroundService : Service() {
         const val EXTRA_URL = "extra_url"
         const val EXTRA_TASK_ID = "extra_task_id"
 
-        private const val CHANNEL_ID = "music_downloads_v2"
-        private const val NOTIFICATION_ID = 4101
+        private const val CHANNEL_ID = "music_downloads_v3"
+        private const val FOREGROUND_NOTIFICATION_ID = 4101
+        private const val FINISHED_NOTIFICATION_ID = 4102
 
         fun start(context: Context, url: String, taskId: String) {
             val intent = Intent(context, DownloadForegroundService::class.java).apply {
