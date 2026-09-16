@@ -10,7 +10,8 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.example.downloaderandroid.MainActivity
+import com.example.downloaderandroid.DownloadHistoryActivity
+import com.example.downloaderandroid.state.DownloadHistoryStore
 import com.example.downloaderandroid.state.DownloadTaskState
 import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.state.NativeDownloadTaskRepository
@@ -27,12 +28,14 @@ import java.util.Locale
 class DownloadForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var repository: NativeDownloadTaskRepository
+    private lateinit var historyStore: DownloadHistoryStore
     private var activeDownloadJob: Job? = null
     private var activeStartId = 0
 
     override fun onCreate() {
         super.onCreate()
         repository = NativeDownloadTaskRepository(applicationContext, NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME)
+        historyStore = DownloadHistoryStore(applicationContext)
         createNotificationChannel()
     }
 
@@ -69,23 +72,26 @@ class DownloadForegroundService : Service() {
             }
 
             if (result.success) {
-                repository.transition(DownloadTaskStatus.PROCESSING, detail = "Download concluído; publicando música.")
+                val completed = repository.transition(DownloadTaskStatus.PROCESSING, detail = "Download concluído; publicando música.")
                 updateNotification("Finalizando música…", 100f, 0L)
-                repository.transition(DownloadTaskStatus.COMPLETED, detail = result.message)
+                val finalState = repository.transition(DownloadTaskStatus.COMPLETED, detail = result.message)
+                historyStore.add(finalState.copy(title = finalState.title ?: result.message))
                 showFinishedNotification("Download concluído", result.message)
             } else {
-                repository.transition(DownloadTaskStatus.FAILED, detail = result.message)
+                val failedState = repository.transition(DownloadTaskStatus.FAILED, detail = result.message)
+                historyStore.add(failedState)
                 showFinishedNotification("Download falhou", result.message)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
+            val detail = "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}"
             runCatching {
                 if (repository.current()?.status in setOf(DownloadTaskStatus.ANALYZING, DownloadTaskStatus.READY, DownloadTaskStatus.DOWNLOADING, DownloadTaskStatus.PROCESSING)) {
-                    repository.transition(DownloadTaskStatus.FAILED, detail = "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}")
+                    historyStore.add(repository.transition(DownloadTaskStatus.FAILED, detail = detail))
                 }
             }
-            showFinishedNotification("Download falhou", "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}")
+            showFinishedNotification("Download falhou", detail)
         } finally {
             if (activeStartId == startId) {
                 activeDownloadJob = null
@@ -96,26 +102,17 @@ class DownloadForegroundService : Service() {
     }
 
     private fun updateNotification(text: String, progressPercent: Float?, etaSeconds: Long?) {
-        getSystemService(NotificationManager::class.java).notify(
-            FOREGROUND_NOTIFICATION_ID,
-            buildNotification("MusicasAndroid", text, progressPercent, true, etaSeconds),
-        )
+        getSystemService(NotificationManager::class.java).notify(FOREGROUND_NOTIFICATION_ID, buildNotification("MusicasAndroid", text, progressPercent, true, etaSeconds))
     }
 
     private fun startForegroundCompat(notification: android.app.Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(FOREGROUND_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(FOREGROUND_NOTIFICATION_ID, notification)
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) startForeground(FOREGROUND_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        else startForeground(FOREGROUND_NOTIFICATION_ID, notification)
     }
 
     private fun stopForegroundCompat(remove: Boolean) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(if (remove) STOP_FOREGROUND_REMOVE else STOP_FOREGROUND_DETACH)
-        } else {
-            @Suppress("DEPRECATION") stopForeground(remove)
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(if (remove) STOP_FOREGROUND_REMOVE else STOP_FOREGROUND_DETACH)
+        else { @Suppress("DEPRECATION") stopForeground(remove) }
     }
 
     private fun showFinishedNotification(title: String, text: String) {
@@ -139,7 +136,7 @@ class DownloadForegroundService : Service() {
                 if (etaSeconds != null && etaSeconds >= 0L && progressPercent != null) setSubText("ETA ${formatEta(etaSeconds)}")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             }
-            .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+            .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, DownloadHistoryActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             .build()
 
     private fun formatProgress(progress: Float, etaSeconds: Long): String = String.format(Locale.getDefault(), "Baixando áudio… %.0f%% • ETA %s", progress, if (etaSeconds >= 0L) formatEta(etaSeconds) else "calculando…")
@@ -154,12 +151,10 @@ class DownloadForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Downloads de música", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "Downloads de áudio em segundo plano."
-                setShowBadge(false)
-            }
-        )
+        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL_ID, "Downloads de música", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "Downloads de áudio em segundo plano."
+            setShowBadge(false)
+        })
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) { super.onTaskRemoved(rootIntent) }
