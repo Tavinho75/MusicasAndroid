@@ -44,6 +44,8 @@ class DownloadStateStore(
             .put("status", status.name)
             .put("title", title)
             .put("detail", detail)
+            .put("progressPercent", progressPercent)
+            .put("etaSeconds", etaSeconds)
             .put("updatedAtEpochMillis", updatedAtEpochMillis)
 
     private fun String.toDownloadTaskState(): DownloadTaskState {
@@ -55,6 +57,8 @@ class DownloadStateStore(
             status = DownloadTaskStatus.valueOf(json.getString("status")),
             title = json.optString("title").takeIf { it.isNotBlank() },
             detail = json.optString("detail").takeIf { it.isNotBlank() },
+            progressPercent = if (json.isNull("progressPercent")) null else json.optDouble("progressPercent").toFloat(),
+            etaSeconds = if (json.isNull("etaSeconds")) null else json.optLong("etaSeconds"),
             updatedAtEpochMillis = json.getLong("updatedAtEpochMillis"),
         )
     }
