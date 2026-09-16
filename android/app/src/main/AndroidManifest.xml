@@ -25,6 +25,13 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".DownloadHistoryActivity"
+            android:exported="false"
+            android:label="Histórico de downloads"
+            android:theme="@style/Theme.DownloaderAndroid"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
