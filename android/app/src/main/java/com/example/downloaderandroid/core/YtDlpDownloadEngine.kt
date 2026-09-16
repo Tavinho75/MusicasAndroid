@@ -15,14 +15,16 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Real audio download engine used by the Phase 3 test harness.
+ * Real audio download engine used by the Phase 3/4 test harness.
  *
  * yt-dlp downloads into the app-private temporary directory first. Successful
  * MP3 files are then published through MediaStore into the public Music folder,
  * where normal music players such as MX Player can discover them.
  *
- * Cookies remain in app-private storage and are passed directly to yt-dlp;
- * they never enter the Compose/JavaScript layer and are never logged.
+ * Phase 4.2 also embeds the source thumbnail as MP3 cover art and keeps the
+ * yt-dlp metadata post-processing enabled. Cookies remain in app-private
+ * storage and are passed directly to yt-dlp; they never enter the Compose/
+ * JavaScript layer and are never logged.
  */
 class YtDlpDownloadEngine(context: Context) {
 
@@ -41,7 +43,7 @@ class YtDlpDownloadEngine(context: Context) {
                 SealCompatibleDownloaderBackend.init(appContext)
                 SealCompatibleDownloaderBackend.ensureYtDlpUpdated(appContext)
 
-                val temporaryDirectory = File(
+                val legacyTemporaryDirectory = File(
                     requireNotNull(appContext.getExternalFilesDir(null)) {
                         "Armazenamento externo do aplicativo indisponível."
                     },
@@ -52,10 +54,20 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
-                // Also publishes MP3s from previous Phase 3 tests. This lets
-                // the three files already downloaded by the user be migrated
-                // the next time a download is started.
-                val previousFiles = publishMp3Files(temporaryDirectory)
+                // Publish MP3s left by the earlier Phase 3 tests. This keeps
+                // the migration of the three already downloaded songs intact.
+                val previousFiles = publishMp3Files(legacyTemporaryDirectory)
+
+                val temporaryDirectory = File(
+                    requireNotNull(appContext.getExternalFilesDir(null)) {
+                        "Armazenamento externo do aplicativo indisponível."
+                    },
+                    "phase4-downloads/${System.currentTimeMillis()}",
+                ).apply {
+                    if (!mkdirs()) {
+                        error("Não foi possível criar a pasta temporária do download.")
+                    }
+                }
 
                 val hasCookies = cookieStore.hasCookies()
                 val attempts = buildList {
@@ -106,6 +118,8 @@ class YtDlpDownloadEngine(context: Context) {
                         .addOption("--fragment-retries", "3")
                         .addOption("--concurrent-fragments", "4")
                         .addOption("--embed-metadata")
+                        .addOption("--embed-thumbnail")
+                        .addOption("--convert-thumbnails", "jpg")
 
                     if (attempt.requiresCookies) {
                         request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
@@ -118,7 +132,7 @@ class YtDlpDownloadEngine(context: Context) {
                     try {
                         val response = YoutubeDL.getInstance().execute(
                             request = request,
-                            processId = "phase3-${System.currentTimeMillis()}",
+                            processId = "phase4-${System.currentTimeMillis()}",
                         )
 
                         if (response.exitCode == 0) {
@@ -130,9 +144,11 @@ class YtDlpDownloadEngine(context: Context) {
                                 outputDirectory = MUSIC_DIRECTORY_DESCRIPTION,
                                 message = if (totalPublished > 0) {
                                     "Download concluído usando ${attempt.label}. " +
+                                        "Metadados e capa foram processados quando disponíveis. " +
                                         "Música salva em $MUSIC_DIRECTORY_DESCRIPTION."
                                 } else {
-                                    "Download concluído usando ${attempt.label}."
+                                    "Download concluído usando ${attempt.label}. " +
+                                        "Metadados e capa foram processados quando disponíveis."
                                 },
                             )
                         }
