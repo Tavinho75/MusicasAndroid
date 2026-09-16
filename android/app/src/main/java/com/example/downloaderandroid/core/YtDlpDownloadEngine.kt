@@ -19,12 +19,11 @@ import java.io.File
  *
  * yt-dlp downloads into the app-private temporary directory first. Successful
  * MP3 files are then published through MediaStore into the public Music folder,
- * where normal music players such as MX Player can discover them.
+ * where normal music players can discover them.
  *
- * Phase 4.2 also embeds the source thumbnail as MP3 cover art and keeps the
- * yt-dlp metadata post-processing enabled. Cookies remain in app-private
- * storage and are passed directly to yt-dlp; they never enter the Compose/
- * JavaScript layer and are never logged.
+ * Phase 4.2 embeds the source thumbnail as MP3 cover art and keeps the yt-dlp
+ * metadata post-processing enabled. Phase 4.3 exposes yt-dlp progress and ETA
+ * to the foreground service so the notification can show real progress.
  */
 class YtDlpDownloadEngine(context: Context) {
 
@@ -37,7 +36,10 @@ class YtDlpDownloadEngine(context: Context) {
         val requiresCookies: Boolean = false,
     )
 
-    suspend fun downloadBestAudio(url: String): DownloadExecutionResult =
+    suspend fun downloadBestAudio(
+        url: String,
+        onProgress: (progressPercent: Float, etaSeconds: Long, line: String) -> Unit = { _, _, _ -> },
+    ): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
             try {
                 SealCompatibleDownloaderBackend.init(appContext)
@@ -54,8 +56,6 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
-                // Publish MP3s left by the earlier Phase 3 tests. This keeps
-                // the migration of the three already downloaded songs intact.
                 val previousFiles = publishMp3Files(legacyTemporaryDirectory)
 
                 val temporaryDirectory = File(
@@ -133,7 +133,9 @@ class YtDlpDownloadEngine(context: Context) {
                         val response = YoutubeDL.getInstance().execute(
                             request = request,
                             processId = "phase4-${System.currentTimeMillis()}",
-                        )
+                        ) { progress, etaSeconds, line ->
+                            onProgress(progress, etaSeconds, line)
+                        }
 
                         if (response.exitCode == 0) {
                             val published = publishMp3Files(temporaryDirectory)
