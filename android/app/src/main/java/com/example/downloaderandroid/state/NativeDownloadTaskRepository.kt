@@ -49,6 +49,26 @@ class NativeDownloadTaskRepository(
         return nextState
     }
 
+    fun updateProgress(
+        progressPercent: Float,
+        etaSeconds: Long,
+        detail: String? = current()?.detail,
+    ): DownloadTaskState {
+        val currentState = requireNotNull(store.load()) {
+            "Nenhuma tarefa nativa disponível para atualizar progresso."
+        }
+
+        val nextState = currentState.copy(
+            progressPercent = progressPercent.coerceIn(0f, 100f),
+            etaSeconds = etaSeconds.takeIf { it >= 0L },
+            detail = detail,
+            updatedAtEpochMillis = System.currentTimeMillis(),
+        )
+
+        store.save(nextState)
+        return nextState
+    }
+
     fun clear() {
         store.clear()
     }
