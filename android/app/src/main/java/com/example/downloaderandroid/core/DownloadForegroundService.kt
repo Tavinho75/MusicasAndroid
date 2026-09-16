@@ -41,7 +41,7 @@ class DownloadForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action != ACTION_START) return START_NOT_STICKY
+        if (intent?.action != ACTION_START) return START_REDELIVER_INTENT
 
         val url = intent.getStringExtra(EXTRA_URL)?.trim()
         val taskId = intent.getStringExtra(EXTRA_TASK_ID)
@@ -58,7 +58,10 @@ class DownloadForegroundService : Service() {
             runDownload(url, taskId, startId)
         }
 
-        return START_NOT_STICKY
+        // Do not tie the service lifetime to MainActivity. If Android recreates
+        // the service after process pressure, the last start Intent is delivered
+        // again so the download can be resumed/recovered from native state.
+        return START_REDELIVER_INTENT
     }
 
     private suspend fun runDownload(url: String, taskId: String, startId: Int) {
@@ -130,7 +133,16 @@ class DownloadForegroundService : Service() {
                 "${error.javaClass.simpleName}: ${error.message ?: "erro inesperado"}",
             )
         } finally {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            // DETACH removes the service's foreground status but intentionally
+            // leaves its notification posted. This prevents Android from
+            // deleting the visible notification merely because the service is
+            // stopping after completion/failure.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_DETACH)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(false)
+            }
             stopSelf(startId)
         }
     }
@@ -211,8 +223,6 @@ class DownloadForegroundService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
-        // v2 deliberately uses a new channel ID. Android does not allow an app
-        // to programmatically raise the importance of an already-created channel.
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
