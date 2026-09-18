@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.yausername.youtubedl_android.YoutubeDL
 import com.example.downloaderandroid.DownloadHistoryActivity
 import com.example.downloaderandroid.state.DownloadHistoryStore
 import com.example.downloaderandroid.state.DownloadTaskState
@@ -40,6 +41,11 @@ class DownloadForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL) {
+            requestCancel(startId)
+            return START_NOT_STICKY
+        }
+
         if (activeDownloadJob?.isActive == true) return START_STICKY
 
         val activeState = repository.current()
@@ -106,7 +112,7 @@ class DownloadForegroundService : Service() {
             repository.transition(DownloadTaskStatus.DOWNLOADING, detail = "Download em segundo plano.")
             updateNotification("Baixando áudio…", null, null)
 
-            val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(url) { progress, etaSeconds, line ->
+            val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(url, taskId) { progress, etaSeconds, line ->
                 val safeProgress = progress.coerceIn(0f, 100f)
                 val progressText = formatProgress(safeProgress, etaSeconds)
                 runCatching { repository.updateProgress(safeProgress, etaSeconds, line.trim().takeIf { it.isNotBlank() } ?: progressText) }
@@ -139,6 +145,52 @@ class DownloadForegroundService : Service() {
                 activeDownloadJob = null
                 stopForegroundCompat(remove = true)
                 stopSelf(startId)
+            }
+        }
+    }
+
+    private fun requestCancel(startId: Int) {
+        val state = repository.current()
+        val taskId = state?.id
+
+        if (taskId != null) {
+            destroyDownloadProcesses(taskId)
+        }
+
+        serviceScope.launch {
+            activeDownloadJob?.cancel()
+            activeDownloadJob?.join()
+
+            runCatching {
+                val current = repository.current()
+                if (current != null && current.status in setOf(
+                        DownloadTaskStatus.DRAFT,
+                        DownloadTaskStatus.ANALYZING,
+                        DownloadTaskStatus.READY,
+                        DownloadTaskStatus.DOWNLOADING,
+                        DownloadTaskStatus.PROCESSING,
+                    )
+                ) {
+                    historyStore.add(
+                        repository.transition(
+                            DownloadTaskStatus.CANCELLED,
+                            detail = "Download cancelado pelo usuário.",
+                        )
+                    )
+                }
+                repository.clear()
+            }
+
+            showFinishedNotification("Download cancelado", "O download foi interrompido. Você já pode iniciar outro.")
+            stopForegroundCompat(remove = true)
+            stopSelf(startId)
+        }
+    }
+
+    private fun destroyDownloadProcesses(taskId: String) {
+        repeat(4) { attemptIndex ->
+            runCatching {
+                YoutubeDL.getInstance().destroyProcessById("phase4-$taskId-$attemptIndex")
             }
         }
     }
@@ -204,19 +256,33 @@ class DownloadForegroundService : Service() {
         // removed from recents. The download remains owned by this service.
     }
     override fun onTimeout(startId: Int, fgsType: Int) {
+        repository.current()?.id?.let(::destroyDownloadProcesses)
         runCatching { repository.transition(DownloadTaskStatus.FAILED, detail = "Serviço em primeiro plano atingiu o limite de execução do Android.") }
         stopSelf(startId)
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { activeDownloadJob?.cancel(); serviceScope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        repository.current()?.id?.let(::destroyDownloadProcesses)
+        activeDownloadJob?.cancel()
+        serviceScope.cancel()
+        super.onDestroy()
+    }
 
     companion object {
         const val ACTION_START = "com.example.downloaderandroid.action.START_DOWNLOAD"
+        const val ACTION_CANCEL = "com.example.downloaderandroid.action.CANCEL_DOWNLOAD"
         const val EXTRA_URL = "extra_url"
         const val EXTRA_TASK_ID = "extra_task_id"
         private const val CHANNEL_ID = "music_downloads_v5"
         private const val FOREGROUND_NOTIFICATION_ID = 4101
         private const val FINISHED_NOTIFICATION_ID = 4102
+
+        fun cancel(context: Context) {
+            val intent = Intent(context, DownloadForegroundService::class.java).apply {
+                action = ACTION_CANCEL
+            }
+            context.startService(intent)
+        }
 
         fun start(context: Context, url: String, taskId: String) {
             val intent = Intent(context, DownloadForegroundService::class.java).apply {
