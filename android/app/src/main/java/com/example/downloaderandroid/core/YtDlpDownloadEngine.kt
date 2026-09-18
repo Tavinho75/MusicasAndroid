@@ -141,18 +141,18 @@ class YtDlpDownloadEngine(context: Context) {
                         if (response.exitCode == 0) {
                             val published = publishMp3Files(temporaryDirectory)
                             val totalPublished = previousFiles + published
+                            val publishedFiles = temporaryDirectory.listFiles()
+                                ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
+                                .orEmpty()
+                            val sourceFile = publishedFiles.firstOrNull()
                             return@withContext DownloadExecutionResult(
                                 success = true,
                                 exitCode = response.exitCode,
                                 outputDirectory = MUSIC_DIRECTORY_DESCRIPTION,
-                                message = if (totalPublished > 0) {
-                                    "Download concluído usando ${attempt.label}. " +
-                                        "Metadados e capa foram processados quando disponíveis. " +
-                                        "Música salva em $MUSIC_DIRECTORY_DESCRIPTION."
-                                } else {
-                                    "Download concluído usando ${attempt.label}. " +
-                                        "Metadados e capa foram processados quando disponíveis."
-                                },
+                                message = "Download concluído usando " + attempt.label + ".",
+                                title = sourceFile?.nameWithoutExtension,
+                                fileSizeBytes = sourceFile?.length() ?: 0L,
+                                folder = "Music/MusicasAndroid",
                             )
                         }
 
@@ -278,4 +278,7 @@ data class DownloadExecutionResult(
     val exitCode: Int,
     val outputDirectory: String?,
     val message: String,
+    val title: String? = null,
+    val fileSizeBytes: Long = 0L,
+    val folder: String = "Music/MusicasAndroid",
 )
