@@ -10,4 +10,6 @@ data class DownloadTaskState(
     val progressPercent: Float? = null,
     val etaSeconds: Long? = null,
     val startedAtEpochMillis: Long = System.currentTimeMillis(),
+    val fileSizeBytes: Long = 0L,
+    val folder: String? = null,
 )
