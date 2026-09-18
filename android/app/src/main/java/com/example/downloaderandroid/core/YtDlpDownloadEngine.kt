@@ -166,7 +166,7 @@ class YtDlpDownloadEngine(context: Context) {
                     } catch (error: YoutubeDLException) {
                         errors += "${attempt.label}: ${error.message ?: "falha sem mensagem"}"
                     } catch (error: YoutubeDL.CanceledException) {
-                        errors += "${attempt.label}: download cancelado"
+                        throw kotlinx.coroutines.CancellationException("Download interrompido pelo usuário.", error)
                     } catch (error: InterruptedException) {
                         Thread.currentThread().interrupt()
                         throw kotlinx.coroutines.CancellationException("Download interrompido pelo usuário.", error)
