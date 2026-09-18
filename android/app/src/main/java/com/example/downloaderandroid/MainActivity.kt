@@ -45,6 +45,7 @@ import com.example.downloaderandroid.auth.YouTubeAuthActivity
 import com.example.downloaderandroid.core.DownloadForegroundService
 import com.example.downloaderandroid.core.ExtractorProbeResult
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
+import com.example.downloaderandroid.state.DownloadQueueStore
 import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.state.DownloadTaskState
 import com.example.downloaderandroid.state.NativeDownloadTaskRepository
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
                 var phase3Logs by mutableStateOf("")
                 var showLogs by mutableStateOf(false)
                 var isDownloading by mutableStateOf(false)
+                var queueCount by mutableStateOf(0)
                 var pendingNotificationUrl by mutableStateOf<String?>(null)
                 val scope = rememberCoroutineScope()
 
@@ -192,8 +194,20 @@ class MainActivity : ComponentActivity() {
                                 .padding(top = 16.dp),
                             label = { Text("Cole o link de uma música ou vídeo") },
                             singleLine = true,
-                            enabled = !isDownloading
+                            enabled = true
                         )
+
+                        if (isDownloading || queueCount > 0) {
+                            Text(
+                                text = if (queueCount == 0) {
+                                    "Fila: download atual em andamento"
+                                } else {
+                                    "Fila: $queueCount download(s) aguardando"
+                                },
+                                modifier = Modifier.padding(top = 8.dp),
+                                textAlign = TextAlign.Center
+                            )
+                        }
 
                         Button(
                             onClick = {
@@ -208,6 +222,31 @@ class MainActivity : ComponentActivity() {
                                 scope.launch {
                                     phase3Status = "🔄 FASE 4.1: verificando permissão de notificações…"
                                     phase3Logs = phase3Status
+
+                                    val queueStore = DownloadQueueStore(applicationContext)
+                                    val activeNow = NativeDownloadTaskRepository(
+                                        applicationContext,
+                                        NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
+                                    ).current()
+
+                                    if (activeNow?.status in setOf(
+                                            DownloadTaskStatus.DRAFT,
+                                            DownloadTaskStatus.ANALYZING,
+                                            DownloadTaskStatus.READY,
+                                            DownloadTaskStatus.DOWNLOADING,
+                                            DownloadTaskStatus.PROCESSING,
+                                        )) {
+                                        val added = queueStore.add(requestedUrl)
+                                        if (added == null) {
+                                            phase3Status = "⚠️ Esse link já está na fila."
+                                            phase3Logs = phase3Status
+                                        } else {
+                                            queueCount = queueStore.list().size
+                                            phase3Status = "➕ Adicionado à fila. Posição: $queueCount"
+                                            phase3Logs = "O download atual continuará normalmente; este link será processado automaticamente depois."
+                                        }
+                                        return@launch
+                                    }
 
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                                         ContextCompat.checkSelfPermission(
@@ -230,7 +269,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(top = 12.dp),
                             enabled = !isDownloading
                         ) {
-                            Text(if (isDownloading) "Baixando em segundo plano…" else "Iniciar download")
+                            Text(if (isDownloading) "Adicionar à fila" else "Iniciar download")
                         }
 
                         if (isDownloading) {
@@ -266,6 +305,7 @@ class MainActivity : ComponentActivity() {
 
                     while (true) {
                         val active = activeRepository.current()
+                        queueCount = DownloadQueueStore(applicationContext).list().size
                         when (active?.status) {
                             DownloadTaskStatus.DRAFT,
                             DownloadTaskStatus.ANALYZING,
