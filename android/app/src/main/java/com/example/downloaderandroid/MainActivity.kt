@@ -112,7 +112,7 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("FASE 1.1 + FASE 2 + FASE 3 + FASE 4.1", textAlign = TextAlign.Center)
+                        Text("FASE 1.1 + FASE 2 + FASE 3 + FASE 4 + FASE 5 + FASE 6", textAlign = TextAlign.Center)
 
                         Button(
                             onClick = { showLogs = !showLogs },
@@ -159,6 +159,18 @@ class MainActivity : ComponentActivity() {
                             }
                         ) {
                             Text("Ativar / configurar notificações")
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Button(
+                            onClick = {
+                                startActivity(
+                                    Intent(this@MainActivity, DownloadHistoryActivity::class.java)
+                                )
+                            }
+                        ) {
+                            Text("Abrir histórico de downloads")
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
@@ -267,7 +279,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             modifier = Modifier.padding(top = 12.dp),
-                            enabled = !isDownloading
+                            enabled = true
                         ) {
                             Text(if (isDownloading) "Adicionar à fila" else "Iniciar download")
                         }
