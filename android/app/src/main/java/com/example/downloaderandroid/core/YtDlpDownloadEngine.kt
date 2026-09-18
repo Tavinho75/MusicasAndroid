@@ -139,19 +139,21 @@ class YtDlpDownloadEngine(context: Context) {
                         }
 
                         if (response.exitCode == 0) {
-                            val published = publishMp3Files(temporaryDirectory)
-                            val totalPublished = previousFiles + published
-                            val publishedFiles = temporaryDirectory.listFiles()
+                            val sourceFiles = temporaryDirectory.listFiles()
                                 ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
                                 .orEmpty()
-                            val sourceFile = publishedFiles.firstOrNull()
+                            val sourceFile = sourceFiles.firstOrNull()
+                            val sourceTitle = sourceFile?.nameWithoutExtension
+                            val sourceSize = sourceFile?.length() ?: 0L
+                            val published = publishMp3Files(temporaryDirectory)
+                            val totalPublished = previousFiles + published
                             return@withContext DownloadExecutionResult(
                                 success = true,
                                 exitCode = response.exitCode,
                                 outputDirectory = MUSIC_DIRECTORY_DESCRIPTION,
                                 message = "Download concluído usando " + attempt.label + ".",
-                                title = sourceFile?.nameWithoutExtension,
-                                fileSizeBytes = sourceFile?.length() ?: 0L,
+                                title = sourceTitle,
+                                fileSizeBytes = sourceSize,
                                 folder = "Music/MusicasAndroid",
                             )
                         }
