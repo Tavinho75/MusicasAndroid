@@ -47,7 +47,8 @@
             android:name=".core.DownloadForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
     </application>
 
