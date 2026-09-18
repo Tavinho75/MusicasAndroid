@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.example.downloaderandroid.DownloadHistoryActivity
 import com.example.downloaderandroid.state.DownloadHistoryStore
+import com.example.downloaderandroid.state.DownloadQueueStore
 import com.example.downloaderandroid.state.DownloadTaskState
 import com.example.downloaderandroid.state.DownloadTaskStatus
 import com.example.downloaderandroid.state.NativeDownloadTaskRepository
@@ -30,6 +31,7 @@ class DownloadForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var repository: NativeDownloadTaskRepository
     private lateinit var historyStore: DownloadHistoryStore
+    private lateinit var queueStore: DownloadQueueStore
     private var activeDownloadJob: Job? = null
     private var activeStartId = 0
 
@@ -37,6 +39,7 @@ class DownloadForegroundService : Service() {
         super.onCreate()
         repository = NativeDownloadTaskRepository(applicationContext, NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME)
         historyStore = DownloadHistoryStore(applicationContext)
+        queueStore = DownloadQueueStore(applicationContext)
         createNotificationChannel()
     }
 
@@ -143,8 +146,22 @@ class DownloadForegroundService : Service() {
         } finally {
             if (activeStartId == startId) {
                 activeDownloadJob = null
-                stopForegroundCompat(remove = true)
-                stopSelf(startId)
+
+                val next = queueStore.list().firstOrNull()
+                if (next != null) {
+                    queueStore.remove(next.id)
+                    val nextTaskId = "phase4-" + java.util.UUID.randomUUID().toString()
+                    repository.clear()
+                    updateNotification("Próximo download da fila…", null, null)
+                    start(
+                        context = applicationContext,
+                        url = next.url,
+                        taskId = nextTaskId,
+                    )
+                } else {
+                    stopForegroundCompat(remove = true)
+                    stopSelf(startId)
+                }
             }
         }
     }
@@ -182,8 +199,20 @@ class DownloadForegroundService : Service() {
             }
 
             showFinishedNotification("Download cancelado", "O download foi interrompido. Você já pode iniciar outro.")
-            stopForegroundCompat(remove = true)
-            stopSelf(startId)
+            val next = queueStore.list().firstOrNull()
+            if (next != null) {
+                queueStore.remove(next.id)
+                repository.clear()
+                updateNotification("Próximo download da fila…", null, null)
+                start(
+                    context = applicationContext,
+                    url = next.url,
+                    taskId = "phase4-" + java.util.UUID.randomUUID().toString(),
+                )
+            } else {
+                stopForegroundCompat(remove = true)
+                stopSelf(startId)
+            }
         }
     }
 
