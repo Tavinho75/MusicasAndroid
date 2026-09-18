@@ -23,6 +23,9 @@ class DownloadHistoryStore(context: Context) {
                             status = item.optString("status"),
                             detail = item.optString("detail").takeIf { it.isNotBlank() },
                             completedAtEpochMillis = item.optLong("completedAtEpochMillis", 0L),
+                            startedAtEpochMillis = item.optLong("startedAtEpochMillis", 0L),
+                            fileSizeBytes = item.optLong("fileSizeBytes", 0L),
+                            folder = item.optString("folder").ifBlank { "Music/MusicasAndroid" },
                         )
                     )
                 }
@@ -38,6 +41,9 @@ class DownloadHistoryStore(context: Context) {
             status = state.status.name,
             detail = state.detail,
             completedAtEpochMillis = System.currentTimeMillis(),
+            startedAtEpochMillis = state.startedAtEpochMillis,
+            fileSizeBytes = state.fileSizeBytes,
+            folder = state.folder ?: "Music/MusicasAndroid",
         )
         val items = list().filterNot { it.id == item.id }.toMutableList()
         items.add(0, item)
@@ -57,6 +63,9 @@ class DownloadHistoryStore(context: Context) {
                     put("status", item.status)
                     put("detail", item.detail ?: "")
                     put("completedAtEpochMillis", item.completedAtEpochMillis)
+                    put("startedAtEpochMillis", item.startedAtEpochMillis)
+                    put("fileSizeBytes", item.fileSizeBytes)
+                    put("folder", item.folder)
                 }
             )
         }
@@ -77,4 +86,7 @@ data class DownloadHistoryItem(
     val status: String,
     val detail: String?,
     val completedAtEpochMillis: Long,
+    val startedAtEpochMillis: Long = 0L,
+    val fileSizeBytes: Long = 0L,
+    val folder: String = "Music/MusicasAndroid",
 )
