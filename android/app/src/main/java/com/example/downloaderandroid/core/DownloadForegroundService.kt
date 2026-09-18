@@ -40,24 +40,66 @@ class DownloadForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action != ACTION_START) return START_NOT_STICKY
         if (activeDownloadJob?.isActive == true) return START_STICKY
-        val url = intent.getStringExtra(EXTRA_URL)?.trim()
-        val taskId = intent.getStringExtra(EXTRA_TASK_ID)
+
+        val activeState = repository.current()
+        val requestedUrl = intent?.getStringExtra(EXTRA_URL)?.trim()
+        val requestedTaskId = intent?.getStringExtra(EXTRA_TASK_ID)
+
+        val isRestartAfterProcessDeath =
+            intent == null &&
+                activeState != null &&
+                activeState.status in setOf(
+                    DownloadTaskStatus.DRAFT,
+                    DownloadTaskStatus.ANALYZING,
+                    DownloadTaskStatus.READY,
+                    DownloadTaskStatus.DOWNLOADING,
+                    DownloadTaskStatus.PROCESSING,
+                )
+
+        val url = if (isRestartAfterProcessDeath) activeState?.url else requestedUrl
+        val taskId = if (isRestartAfterProcessDeath) activeState?.id else requestedTaskId
+
         if (url.isNullOrBlank() || taskId.isNullOrBlank()) {
-            stopSelf(startId)
+            if (intent == null) stopSelf(startId)
             return START_NOT_STICKY
         }
+
         activeStartId = startId
-        startForegroundCompat(buildNotification("MusicasAndroid", "Preparando download…", null, true, null))
-        activeDownloadJob = serviceScope.launch { runDownload(url, taskId, startId) }
+
+        // Re-publish the foreground notification immediately whenever Android
+        // recreates this sticky service. This prevents a stale persisted task
+        // from existing without a visible foreground-service notification.
+        startForegroundCompat(
+            buildNotification(
+                "MusicasAndroid",
+                if (isRestartAfterProcessDeath) "Retomando download em segundo plano…" else "Preparando download…",
+                activeState?.progressPercent,
+                true,
+                activeState?.etaSeconds,
+            )
+        )
+
+        activeDownloadJob = serviceScope.launch {
+            runDownload(url, taskId, startId, resumeExisting = isRestartAfterProcessDeath)
+        }
         return START_STICKY
     }
 
-    private suspend fun runDownload(url: String, taskId: String, startId: Int) {
+    private suspend fun runDownload(url: String, taskId: String, startId: Int, resumeExisting: Boolean = false) {
         try {
-            repository.clear()
-            repository.create(DownloadTaskState(taskId, url, DownloadTaskStatus.DRAFT, "Download em segundo plano", "URL recebida pelo serviço."))
+            if (!resumeExisting) {
+                repository.clear()
+                repository.create(DownloadTaskState(taskId, url, DownloadTaskStatus.DRAFT, "Download em segundo plano", "URL recebida pelo serviço."))
+            } else {
+                repository.current()?.let { state ->
+                    repository.updateProgress(
+                        state.progressPercent ?: 0f,
+                        state.etaSeconds ?: -1L,
+                        "Serviço retomado pelo Android; continuando o download.",
+                    )
+                }
+            }
             repository.transition(DownloadTaskStatus.ANALYZING, detail = "Preparando yt-dlp em segundo plano.")
             updateNotification("Analisando link…", null, null)
             repository.transition(DownloadTaskStatus.READY, detail = "Motor pronto para iniciar o download.")
@@ -151,13 +193,16 @@ class DownloadForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL_ID, "Downloads de música", NotificationManager.IMPORTANCE_DEFAULT).apply {
+        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL_ID, "Downloads de música", NotificationManager.IMPORTANCE_HIGH).apply {
             description = "Downloads de áudio em segundo plano."
             setShowBadge(false)
         })
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) { super.onTaskRemoved(rootIntent) }
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Do not stop or cancel the foreground service when the app task is
+        // removed from recents. The download remains owned by this service.
+    }
     override fun onTimeout(startId: Int, fgsType: Int) {
         runCatching { repository.transition(DownloadTaskStatus.FAILED, detail = "Serviço em primeiro plano atingiu o limite de execução do Android.") }
         stopSelf(startId)
