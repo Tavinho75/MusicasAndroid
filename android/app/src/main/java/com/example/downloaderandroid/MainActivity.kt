@@ -237,6 +237,17 @@ class MainActivity : ComponentActivity() {
                             CircularProgressIndicator(
                                 modifier = Modifier.padding(top = 16.dp)
                             )
+
+                            Button(
+                                onClick = {
+                                    phase3Status = "⏹️ Cancelando e liberando o download…"
+                                    phase3Logs = "Se o download travou, esta opção encerra o processo yt-dlp e libera o aplicativo para um novo download."
+                                    DownloadForegroundService.cancel(applicationContext)
+                                },
+                                modifier = Modifier.padding(top = 12.dp)
+                            ) {
+                                Text("Cancelar / destravar download")
+                            }
                         }
 
                         Text(
