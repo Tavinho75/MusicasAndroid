@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,7 +25,7 @@ import com.example.downloaderandroid.state.DownloadHistoryItem
 import com.example.downloaderandroid.state.DownloadHistoryStore
 import com.example.downloaderandroid.ui.theme.DownloaderAndroidTheme
 import kotlinx.coroutines.delay
-import java.text.DateFormat
+import java.util.concurrent.TimeUnit
 import java.util.Date
 
 /** Phase 5: persistent local history of completed/failed downloads. */
@@ -53,8 +54,15 @@ class DownloadHistoryActivity : ComponentActivity() {
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        OutlinedButton(
+                            onClick = { finish() },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("← Voltar")
+                        }
+
                         Text("MusicasAndroid — Histórico")
-                        Text("FASE 5 — Downloads recentes")
+                        Text("Downloads recentes")
 
                         if (items.isEmpty()) {
                             Text("Nenhum download finalizado ainda.")
@@ -78,13 +86,36 @@ class DownloadHistoryActivity : ComponentActivity() {
 
 @androidx.compose.runtime.Composable
 private fun HistoryItem(item: DownloadHistoryItem) {
-    val date = if (item.completedAtEpochMillis > 0L) {
-        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(item.completedAtEpochMillis))
-    } else ""
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Text(item.title ?: "Download sem título")
-        Text(if (item.status == "COMPLETED") "Concluído" else "Falhou")
-        item.detail?.let { Text(it) }
-        Text(date)
+    val status = when (item.status) {
+        "COMPLETED" -> "Concluído"
+        "CANCELLED" -> "Cancelado"
+        "FAILED" -> "Falhou"
+        else -> item.status
     }
+    val elapsedMillis = if (item.startedAtEpochMillis > 0L && item.completedAtEpochMillis >= item.startedAtEpochMillis) {
+        item.completedAtEpochMillis - item.startedAtEpochMillis
+    } else 0L
+    val elapsed = formatElapsed(elapsedMillis)
+    val size = formatSize(item.fileSizeBytes)
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text("Download $status:")
+        Text("${item.title ?: "Download sem título"} - $elapsed")
+        Text("${item.folder} - $size")
+    }
+}
+
+private fun formatElapsed(milliseconds: Long): String {
+    if (milliseconds <= 0L) return "--"
+    val seconds = TimeUnit.MILLISECONDS.toSeconds(milliseconds)
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val remaining = seconds % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remaining)
+    else "%02d:%02d".format(minutes, remaining)
+}
+
+private fun formatSize(bytes: Long): String {
+    if (bytes <= 0L) return "--"
+    if (bytes < 1024L * 1024L) return "%.1f KB".format(bytes / 1024.0)
+    return "%.1f MB".format(bytes / (1024.0 * 1024.0))
 }
