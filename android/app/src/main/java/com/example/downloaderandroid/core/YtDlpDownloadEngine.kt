@@ -38,6 +38,7 @@ class YtDlpDownloadEngine(context: Context) {
 
     suspend fun downloadBestAudio(
         url: String,
+        taskId: String,
         onProgress: (progressPercent: Float, etaSeconds: Long, line: String) -> Unit = { _, _, _ -> },
     ): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
@@ -97,7 +98,7 @@ class YtDlpDownloadEngine(context: Context) {
 
                 val errors = mutableListOf<String>()
 
-                for (attempt in attempts) {
+                for ((attemptIndex, attempt) in attempts.withIndex()) {
                     val outputTemplate = File(
                         temporaryDirectory,
                         "%(title)s.%(ext)s",
@@ -132,7 +133,7 @@ class YtDlpDownloadEngine(context: Context) {
                     try {
                         val response = YoutubeDL.getInstance().execute(
                             request = request,
-                            processId = "phase4-${System.currentTimeMillis()}",
+                            processId = "phase4-$taskId-$attemptIndex",
                         ) { progress, etaSeconds, line ->
                             onProgress(progress, etaSeconds, line)
                         }
@@ -168,7 +169,7 @@ class YtDlpDownloadEngine(context: Context) {
                         errors += "${attempt.label}: download cancelado"
                     } catch (error: InterruptedException) {
                         Thread.currentThread().interrupt()
-                        errors += "${attempt.label}: execução interrompida"
+                        throw kotlinx.coroutines.CancellationException("Download interrompido pelo usuário.", error)
                     } catch (error: Throwable) {
                         errors += "${attempt.label}: ${error.javaClass.simpleName}: " +
                             (error.message ?: "sem mensagem")
