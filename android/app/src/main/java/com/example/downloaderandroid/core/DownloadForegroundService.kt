@@ -125,9 +125,13 @@ class DownloadForegroundService : Service() {
             if (result.success) {
                 val completed = repository.transition(DownloadTaskStatus.PROCESSING, detail = "Download concluído; publicando música.")
                 updateNotification("Finalizando música…", 100f, 0L)
-                val finalState = repository.transition(DownloadTaskStatus.COMPLETED, detail = result.message)
-                historyStore.add(finalState.copy(title = finalState.title ?: result.message))
-                showFinishedNotification("Download concluído", result.message)
+                val finalState = repository.transition(DownloadTaskStatus.COMPLETED, detail = result.message).copy(
+                    title = result.title ?: "Download concluído",
+                    fileSizeBytes = result.fileSizeBytes,
+                    folder = result.folder,
+                )
+                repository.create(finalState)
+                historyStore.add(finalState)
             } else {
                 val failedState = repository.transition(DownloadTaskStatus.FAILED, detail = result.message)
                 historyStore.add(failedState)
@@ -159,6 +163,7 @@ class DownloadForegroundService : Service() {
                         taskId = nextTaskId,
                     )
                 } else {
+                    showFinishedNotification("MusicasAndroid", "Downloads concluídos")
                     stopForegroundCompat(remove = true)
                     stopSelf(startId)
                 }
