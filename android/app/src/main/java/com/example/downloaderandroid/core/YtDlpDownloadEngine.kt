@@ -3,6 +3,7 @@ package com.example.downloaderandroid.core
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
@@ -15,22 +16,27 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Real audio download engine used by the Phase 3/4 test harness.
+ * Motor real de download de áudio.
  *
- * yt-dlp downloads into the app-private temporary directory first. Successful
- * MP3 files are then published through MediaStore into the public Music folder,
- * where normal music players can discover them.
+ * O yt-dlp baixa primeiro para o diretório temporário privado do aplicativo. Ao
+ * final, os MP3 são publicados via MediaStore na pasta pública de músicas, onde
+ * os players do sistema conseguem encontrá-los.
  *
- * Phase 4.2 embeds the source thumbnail as MP3 cover art and keeps the yt-dlp
- * metadata post-processing enabled. Phase 4.3 exposes yt-dlp progress and ETA
- * to the foreground service so the notification can show real progress.
+ * Fluxo atual:
+ * - o título da faixa é descoberto durante o próprio download, evitando uma
+ *   extração extra só para mostrar o nome na notificação;
+ * - a estratégia de extração que funcionou por último é tentada primeiro;
+ * - a atualização do yt-dlp fica fora do caminho crítico (uma vez por dia);
+ * - a pasta temporária da tarefa é removida ao final, com ou sem sucesso.
  */
 class YtDlpDownloadEngine(context: Context) {
 
     private val appContext = context.applicationContext
     private val cookieStore = YouTubeCookieStore(appContext)
+    private val attemptMemory = DownloadAttemptMemory(appContext)
 
     private data class DownloadAttempt(
+        val key: String,
         val label: String,
         val extractorArgs: String? = null,
         val requiresCookies: Boolean = false,
@@ -40,10 +46,11 @@ class YtDlpDownloadEngine(context: Context) {
         withContext(Dispatchers.IO) {
             runCatching {
                 SealCompatibleDownloaderBackend.init(appContext)
-                SealCompatibleDownloaderBackend.ensureYtDlpUpdated(appContext)
 
                 val request = YoutubeDLRequest(url)
                     .addOption("--no-playlist")
+                    .addOption("--skip-download")
+                    .addOption("--no-warnings")
                 if (cookieStore.hasCookies()) {
                     request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
                 }
@@ -51,88 +58,56 @@ class YtDlpDownloadEngine(context: Context) {
             }.getOrNull()
         }
 
+    /** Atualiza o yt-dlp fora do fluxo de download (uma vez por dia). */
+    suspend fun ensureUpToDate(force: Boolean = false): Boolean =
+        SealCompatibleDownloaderBackend.updateYtDlpIfDue(appContext, force)
+
     suspend fun downloadBestAudio(
         url: String,
         taskId: String,
         onProgress: (progressPercent: Float, etaSeconds: Long, line: String) -> Unit = { _, _, _ -> },
+        onTitle: (String) -> Unit = {},
     ): DownloadExecutionResult =
         withContext(Dispatchers.IO) {
+            val temporaryDirectory = createTemporaryDirectory() ?: return@withContext DownloadExecutionResult(
+                success = false,
+                exitCode = -1,
+                outputDirectory = null,
+                message = "Não foi possível criar a pasta temporária de downloads.",
+            )
+
             try {
-                SealCompatibleDownloaderBackend.init(appContext)
-                SealCompatibleDownloaderBackend.ensureYtDlpUpdated(appContext)
-
-                val legacyTemporaryDirectory = File(
-                    requireNotNull(appContext.getExternalFilesDir(null)) {
-                        "Armazenamento externo do aplicativo indisponível."
-                    },
-                    "phase3-downloads",
-                ).apply {
-                    if (!exists() && !mkdirs()) {
-                        error("Não foi possível criar a pasta temporária de downloads.")
-                    }
-                }
-
-                val previousFiles = publishMp3Files(legacyTemporaryDirectory)
-
-                val temporaryDirectory = File(
-                    requireNotNull(appContext.getExternalFilesDir(null)) {
-                        "Armazenamento externo do aplicativo indisponível."
-                    },
-                    "phase4-downloads/${System.currentTimeMillis()}",
-                ).apply {
-                    if (!mkdirs()) {
-                        error("Não foi possível criar a pasta temporária do download.")
-                    }
-                }
+                // Publica arquivos deixados por uma versão anterior do motor antes
+                // de limpar a pasta. Sem isso, o áudio já baixado seria perdido.
+                publishMp3Files(legacyTemporaryDirectory())
 
                 val hasCookies = cookieStore.hasCookies()
-                val attempts = buildList {
-                    if (hasCookies) {
-                        add(
-                            DownloadAttempt(
-                                label = "YouTube autenticado",
-                                requiresCookies = true,
-                            )
-                        )
-                    }
-
-                    add(DownloadAttempt(label = "YouTube padrão"))
-                    add(
-                        DownloadAttempt(
-                            label = "Android VR",
-                            extractorArgs = "youtube:player_client=android_vr",
-                        )
-                    )
-                    add(
-                        DownloadAttempt(
-                            label = "Web Safari HLS",
-                            extractorArgs = "youtube:player_client=web_safari",
-                        )
-                    )
-                }
+                val preferredKey = attemptMemory.preferredKey(url)
+                val attempts = orderedAttempts(hasCookies, preferredKey)
 
                 val errors = mutableListOf<String>()
+                var earnedTitle: String? = null
 
                 for ((attemptIndex, attempt) in attempts.withIndex()) {
-                    val outputTemplate = File(
-                        temporaryDirectory,
-                        "%(title)s.%(ext)s",
-                    ).absolutePath
+                    val outputTemplate = File(temporaryDirectory, "%(title)s.%(ext)s").absolutePath
 
                     val request = YoutubeDLRequest(url)
                         .addOption("-o", outputTemplate)
                         .addOption("-f", "bestaudio/best")
                         .addOption("-x")
                         .addOption("--audio-format", "mp3")
-                        .addOption("--audio-quality", "0")
+                        .addOption("--audio-quality", AUDIO_QUALITY)
                         .addOption("--no-playlist")
                         .addOption("--no-mtime")
                         .addOption("--newline")
-                        .addOption("--no-part")
-                        .addOption("--force-overwrites")
+                        // Sem --no-part o yt-dlp retoma de onde parou; --force-overwrites
+                        // é desnecessário porque cada download usa uma pasta nova.
+                        .addOption("--continue")
+                        .addOption("--no-overwrites")
+                        .addOption("--cache-dir", cacheDirectory().absolutePath)
                         .addOption("--retries", "3")
                         .addOption("--fragment-retries", "3")
-                        .addOption("--concurrent-fragments", "4")
+                        .addOption("--concurrent-fragments", CONCURRENT_FRAGMENTS.toString())
                         .addOption("--embed-metadata")
                         .addOption("--embed-thumbnail")
                         .addOption("--convert-thumbnails", "jpg")
@@ -145,33 +120,58 @@ class YtDlpDownloadEngine(context: Context) {
                         request.addOption("--extractor-args", extractorArgs)
                     }
 
+                    val processId = DownloadProcessRegistry.processId(taskId, attemptIndex)
+                    DownloadProcessRegistry.register(processId)
+
                     try {
                         val response = YoutubeDL.getInstance().execute(
                             request = request,
-                            processId = "phase4-$taskId-$attemptIndex",
+                            processId = processId,
                         ) { progress, etaSeconds, line ->
                             onProgress(progress, etaSeconds, line)
+                            YtDlpOutputParser.titleFromLine(line)?.let { title ->
+                                if (earnedTitle == null) {
+                                    earnedTitle = title
+                                    onTitle(title)
+                                }
+                            }
                         }
 
                         if (response.exitCode == 0) {
+                            attemptMemory.remember(url, attempt.key)
+
                             val sourceFiles = temporaryDirectory.listFiles()
                                 ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
                                 .orEmpty()
                             val sourceFile = sourceFiles.firstOrNull()
-                            val sourceTitle = sourceFile?.nameWithoutExtension
+                            val sourceTitle = sourceFile?.nameWithoutExtension ?: earnedTitle
                             val sourceSize = sourceFile?.length() ?: 0L
-                            val published = publishMp3Files(temporaryDirectory)
-                            val totalPublished = previousFiles + published
+
+                            val (published, alreadyPresent) = publishMp3Files(temporaryDirectory)
+
+                            val outcomeMessage = buildString {
+                                append("Download concluído usando ")
+                                append(attempt.label)
+                                append('.')
+                                if (published == 0 && alreadyPresent > 0) {
+                                    append("\nA música já estava na sua biblioteca; nada foi duplicado.")
+                                }
+                            }
+
                             return@withContext DownloadExecutionResult(
                                 success = true,
                                 exitCode = response.exitCode,
                                 outputDirectory = MUSIC_DIRECTORY_DESCRIPTION,
-                                message = "Download concluído usando " + attempt.label + ".",
+                                message = outcomeMessage,
                                 title = sourceTitle,
                                 fileSizeBytes = sourceSize,
                                 folder = "Music/MusicasAndroid",
                             )
                         }
+
+                        // A estratégia lembrada deixou de funcionar: descarta e
+                        // deixa as demais tentativas decidirem o resultado.
+                        if (attempt.key == preferredKey) attemptMemory.forget(url)
 
                         errors += "${attempt.label}: código ${response.exitCode}"
                         response.err
@@ -181,6 +181,7 @@ class YtDlpDownloadEngine(context: Context) {
                             .takeLast(3)
                             .forEach { line -> errors += "  $line" }
                     } catch (error: YoutubeDLException) {
+                        if (attempt.key == preferredKey) attemptMemory.forget(url)
                         errors += "${attempt.label}: ${error.message ?: "falha sem mensagem"}"
                     } catch (error: YoutubeDL.CanceledException) {
                         throw kotlinx.coroutines.CancellationException("Download interrompido pelo usuário.", error)
@@ -190,6 +191,8 @@ class YtDlpDownloadEngine(context: Context) {
                     } catch (error: Throwable) {
                         errors += "${attempt.label}: ${error.javaClass.simpleName}: " +
                             (error.message ?: "sem mensagem")
+                    } finally {
+                        DownloadProcessRegistry.release(processId)
                     }
                 }
 
@@ -237,24 +240,90 @@ class YtDlpDownloadEngine(context: Context) {
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
-                    outputDirectory = null,
+                    outputDirectory = temporaryDirectory.absolutePath,
                     message = "${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}",
                 )
+            } finally {
+                // Libera o espaço da tarefa: sobram apenas áudios originais,
+                // miniaturas e arquivos parciais quando o download não conclui.
+                DownloadStorage.deleteQuietly(temporaryDirectory)
             }
         }
 
     /**
-     * Copies MP3s from the temporary app directory into the public Android
-     * Music collection. MediaStore makes the files visible to music players
-     * without requiring broad storage permissions on Android 10+.
+     * Monta a escada de tentativas colocando em primeiro lugar a estratégia que
+     * já funcionou para este site. A ordem padrão é preservada como fallback.
      */
-    private fun publishMp3Files(directory: File): Int {
-        if (!directory.exists()) return 0
+    private fun orderedAttempts(hasCookies: Boolean, preferredKey: String?): List<DownloadAttempt> {
+        val attempts = buildList {
+            if (hasCookies) {
+                add(
+                    DownloadAttempt(
+                        key = "cookies",
+                        label = "YouTube autenticado",
+                        requiresCookies = true,
+                    )
+                )
+            }
+
+            add(DownloadAttempt(key = "default", label = "YouTube padrão"))
+            add(
+                DownloadAttempt(
+                    key = "android_vr",
+                    label = "Android VR",
+                    extractorArgs = "youtube:player_client=android_vr",
+                )
+            )
+            add(
+                DownloadAttempt(
+                    key = "web_safari",
+                    label = "Web Safari HLS",
+                    extractorArgs = "youtube:player_client=web_safari",
+                )
+            )
+        }
+
+        if (preferredKey == null) return attempts
+        return attempts.sortedByDescending { attempt -> if (attempt.key == preferredKey) 1 else 0 }
+    }
+
+    private fun createTemporaryDirectory(): File? {
+        val base = appContext.getExternalFilesDir(null) ?: return null
+        val directory = File(base, "phase4-downloads/${System.currentTimeMillis()}").apply {
+            if (!mkdirs() && !isDirectory) return null
+        }
+        return directory
+    }
+
+    private fun legacyTemporaryDirectory(): File =
+        File(appContext.getExternalFilesDir(null), "phase3-downloads")
+
+    private fun cacheDirectory(): File =
+        File(appContext.filesDir, "yt-dlp-cache").apply { mkdirs() }
+
+    /**
+     * Copia os MP3 do diretório temporário para a coleção pública de músicas.
+     *
+     * Arquivos com o mesmo nome já presentes na pasta de destino são ignorados,
+     * evitando duplicatas como "Título (1).mp3" na biblioteca do usuário.
+     *
+     * @return quantidade publicada e quantidade que já existia no destino.
+     */
+    private fun publishMp3Files(directory: File): Pair<Int, Int> {
+        if (!directory.exists()) return 0 to 0
 
         var publishedCount = 0
+        var alreadyPresentCount = 0
+
         directory.listFiles()
             ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
             ?.forEach { source ->
+                if (musicWithNameExists(source.name)) {
+                    alreadyPresentCount++
+                    source.delete()
+                    return@forEach
+                }
+
                 val values = ContentValues().apply {
                     put(MediaStore.Audio.Media.DISPLAY_NAME, source.name)
                     put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
@@ -266,10 +335,8 @@ class YtDlpDownloadEngine(context: Context) {
                 }
 
                 val resolver = appContext.contentResolver
-                val uri = resolver.insert(
-                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                    values,
-                ) ?: return@forEach
+                val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: return@forEach
 
                 try {
                     resolver.openOutputStream(uri)?.use { output ->
@@ -278,29 +345,60 @@ class YtDlpDownloadEngine(context: Context) {
 
                     resolver.update(
                         uri,
-                        ContentValues().apply {
-                            put(MediaStore.Audio.Media.IS_PENDING, 0)
-                        },
+                        ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) },
                         null,
                         null,
                     )
 
-                    if (!source.delete()) {
-                        // The public copy is already complete, so leaving the
-                        // temporary file is safe and does not invalidate it.
-                    }
+                    // A cópia pública já está completa; se a remoção do temporário
+                    // falhar, ela é limpa na próxima varredura de pastas antigas.
+                    source.delete()
                     publishedCount++
                 } catch (error: Throwable) {
                     resolver.delete(uri, null, null)
                 }
             }
 
-        return publishedCount
+        return publishedCount to alreadyPresentCount
+    }
+
+    /** Verifica se já existe uma música com este nome na pasta de destino. */
+    private fun musicWithNameExists(fileName: String): Boolean {
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        }
+
+        val selection = "${MediaStore.Audio.Media.DISPLAY_NAME} = ? AND " +
+            "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?"
+        val selectionArgs = arrayOf(fileName, "${Environment.DIRECTORY_MUSIC}/MusicasAndroid%")
+
+        return runCatching {
+            appContext.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Audio.Media._ID),
+                selection,
+                selectionArgs,
+                null,
+            )?.use { cursor -> cursor.moveToFirst() } ?: false
+        }.getOrDefault(false)
     }
 
     companion object {
         private const val MUSIC_DIRECTORY_DESCRIPTION =
             "Armazenamento interno compartilhado/Music/MusicasAndroid"
+
+        /**
+         * Qualidade do áudio final no formato MP3.
+         *
+         * "0" mantém o comportamento atual (VBR de alta qualidade). O desktop usa
+         * CBR 320 (config.json); alinhar os dois é uma decisão de produto pendente.
+         */
+        private const val AUDIO_QUALITY = "0"
+
+        /** Fragmentos baixados em paralelo quando a origem é segmentada. */
+        private const val CONCURRENT_FRAGMENTS = 8
     }
 }
 
