@@ -226,22 +226,16 @@ class MainActivity : ComponentActivity() {
                                 .padding(top = 8.dp),
                             label = {
                                 Text(
-                                    if (bulkMode) {
+                                    text = if (bulkMode) {
                                         "Cole um link por linha"
                                     } else {
                                         "Cole o link de uma música ou vídeo"
                                     }
                                 },
                             },
-                            supportingText = {
-                                if (bulkMode) {
-                                    Text("Cada linha será tratada como um download separado.")
-                                }
-                            },
                             singleLine = !bulkMode,
                             minLines = if (bulkMode) 6 else 1,
                             maxLines = if (bulkMode) 12 else 1,
-                            enabled = true
                         )
 
                         if (isDownloading || queueCount > 0) {
