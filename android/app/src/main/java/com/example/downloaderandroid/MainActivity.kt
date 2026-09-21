@@ -44,6 +44,7 @@ import com.example.downloaderandroid.core.DownloadForegroundService
 import com.example.downloaderandroid.core.DownloadProcessRegistry
 import com.example.downloaderandroid.core.ExtractorProbeResult
 import com.example.downloaderandroid.core.SealCompatibleDownloaderBackend
+import com.example.downloaderandroid.core.YtDlpDownloadEngine
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
 import com.example.downloaderandroid.state.DownloadQueueStore
 import com.example.downloaderandroid.state.DownloadTaskStatus
@@ -461,10 +462,17 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect("backend-warmup") {
-                    // Desempacota os binários nativos fora do caminho do usuário:
-                    // a primeira música do dia não paga essa inicialização.
                     withContext(Dispatchers.IO) {
+                        // Desempacota os binários nativos fora do caminho do usuário:
+                        // a primeira música do dia não paga essa inicialização.
                         SealCompatibleDownloaderBackend.warmUp(applicationContext)
+
+                        // Mantém o extrator atualizado sem penalizar cada download:
+                        // a verificação roda no máximo uma vez por dia, na abertura
+                        // do app. Sem isso o binário embutido nunca é atualizado e
+                        // os downloads podem parar de funcionar quando o YouTube
+                        // mudar de novo.
+                        runCatching { YtDlpDownloadEngine(applicationContext).ensureUpToDate() }
                     }
                 }
 

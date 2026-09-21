@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
+import android.util.Log
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
 import com.example.downloaderandroid.auth.YouTubeCookieStore
 import com.yausername.youtubedl_android.YoutubeDL
@@ -44,6 +46,7 @@ class YtDlpDownloadEngine(context: Context) {
 
     suspend fun resolveTitle(url: String): String? =
         withContext(Dispatchers.IO) {
+            val startedAt = SystemClock.elapsedRealtime()
             runCatching {
                 SealCompatibleDownloaderBackend.init(appContext)
 
@@ -55,6 +58,11 @@ class YtDlpDownloadEngine(context: Context) {
                     request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
                 }
                 YoutubeDL.getInstance().getInfo(request).title?.trim()?.takeIf { it.isNotBlank() }
+            }.also { result ->
+                Log.i(
+                    TIMING_TAG,
+                    "resolveTitulo=${SystemClock.elapsedRealtime() - startedAt}ms ok=${result.getOrNull() != null}",
+                )
             }.getOrNull()
         }
 
@@ -76,13 +84,22 @@ class YtDlpDownloadEngine(context: Context) {
                 message = "Não foi possível criar a pasta temporária de downloads.",
             )
 
+            val jobStartedAt = SystemClock.elapsedRealtime()
             try {
                 // Publica arquivos deixados por uma versão anterior do motor antes
                 // de limpar a pasta. Sem isso, o áudio já baixado seria perdido.
+                val legacyStartedAt = SystemClock.elapsedRealtime()
                 publishMp3Files(legacyTemporaryDirectory())
+                Log.i(
+                    TIMING_TAG,
+                    "publicacaoLegada=${SystemClock.elapsedRealtime() - legacyStartedAt}ms",
+                )
 
                 val hasCookies = cookieStore.hasCookies()
-                val preferredKey = attemptMemory.preferredKey(url)
+                // Desligado por padrão: reordenar a escada sem medição pode fixar
+                // um cliente mais lento como primeira escolha. Ligue com
+                // PREFER_REMEMBERED_ATTEMPT depois de comparar os tempos.
+                val preferredKey = if (PREFER_REMEMBERED_ATTEMPT) attemptMemory.preferredKey(url) else null
                 val attempts = orderedAttempts(hasCookies, preferredKey)
 
                 val errors = mutableListOf<String>()
@@ -123,11 +140,29 @@ class YtDlpDownloadEngine(context: Context) {
                     val processId = DownloadProcessRegistry.processId(taskId, attemptIndex)
                     DownloadProcessRegistry.register(processId)
 
+                    val attemptStartedAt = SystemClock.elapsedRealtime()
+                    var firstOutputAt = 0L
+                    // Cada pós-processador do yt-dlp é anunciado por uma linha
+                    // "[Nome] ...". Medindo o intervalo entre anúncios consecutivos
+                    // dá para separar download de rede de conversão/capa.
+                    var stageName = "extracao+download"
+                    var stageStartedAt = attemptStartedAt
+                    val stageDurations = mutableListOf<String>()
+
                     try {
                         val response = YoutubeDL.getInstance().execute(
                             request = request,
                             processId = processId,
                         ) { progress, etaSeconds, line ->
+                            if (firstOutputAt == 0L) firstOutputAt = SystemClock.elapsedRealtime()
+
+                            val postProcessorMarker = POST_PROCESSOR_PATTERN.find(line)?.groupValues?.get(1)
+                            if (postProcessorMarker != null && postProcessorMarker != stageName) {
+                                stageDurations += "$stageName=${SystemClock.elapsedRealtime() - stageStartedAt}ms"
+                                stageName = postProcessorMarker
+                                stageStartedAt = SystemClock.elapsedRealtime()
+                            }
+
                             onProgress(progress, etaSeconds, line)
                             YtDlpOutputParser.titleFromLine(line)?.let { title ->
                                 if (earnedTitle == null) {
@@ -137,8 +172,17 @@ class YtDlpDownloadEngine(context: Context) {
                             }
                         }
 
+                        val finishedAt = SystemClock.elapsedRealtime()
+                        stageDurations += "$stageName=${finishedAt - stageStartedAt}ms"
+                        Log.i(
+                            TIMING_TAG,
+                            "tentativa=${attempt.key} total=${finishedAt - attemptStartedAt}ms " +
+                                "primeiraSaida=${firstOutputAt.takeIf { it > 0 }?.minus(attemptStartedAt) ?: -1}ms " +
+                                "etapas=[${stageDurations.joinToString()}] exit=${response.exitCode}",
+                        )
+
                         if (response.exitCode == 0) {
-                            attemptMemory.remember(url, attempt.key)
+                            if (PREFER_REMEMBERED_ATTEMPT) attemptMemory.remember(url, attempt.key)
 
                             val sourceFiles = temporaryDirectory.listFiles()
                                 ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
@@ -147,7 +191,17 @@ class YtDlpDownloadEngine(context: Context) {
                             val sourceTitle = sourceFile?.nameWithoutExtension ?: earnedTitle
                             val sourceSize = sourceFile?.length() ?: 0L
 
+                            val publishStartedAt = SystemClock.elapsedRealtime()
                             val (published, alreadyPresent) = publishMp3Files(temporaryDirectory)
+                            Log.i(
+                                TIMING_TAG,
+                                "publicacaoMediaStore=${SystemClock.elapsedRealtime() - publishStartedAt}ms " +
+                                    "publicados=$published jaExistiam=$alreadyPresent",
+                            )
+                            Log.i(
+                                TIMING_TAG,
+                                "TOTAL_DOWNLOAD=${SystemClock.elapsedRealtime() - jobStartedAt}ms",
+                            )
 
                             val outcomeMessage = buildString {
                                 append("Download concluído usando ")
@@ -171,7 +225,7 @@ class YtDlpDownloadEngine(context: Context) {
 
                         // A estratégia lembrada deixou de funcionar: descarta e
                         // deixa as demais tentativas decidirem o resultado.
-                        if (attempt.key == preferredKey) attemptMemory.forget(url)
+                        if (PREFER_REMEMBERED_ATTEMPT && attempt.key == preferredKey) attemptMemory.forget(url)
 
                         errors += "${attempt.label}: código ${response.exitCode}"
                         response.err
@@ -181,7 +235,7 @@ class YtDlpDownloadEngine(context: Context) {
                             .takeLast(3)
                             .forEach { line -> errors += "  $line" }
                     } catch (error: YoutubeDLException) {
-                        if (attempt.key == preferredKey) attemptMemory.forget(url)
+                        if (PREFER_REMEMBERED_ATTEMPT && attempt.key == preferredKey) attemptMemory.forget(url)
                         errors += "${attempt.label}: ${error.message ?: "falha sem mensagem"}"
                     } catch (error: YoutubeDL.CanceledException) {
                         throw kotlinx.coroutines.CancellationException("Download interrompido pelo usuário.", error)
@@ -397,8 +451,31 @@ class YtDlpDownloadEngine(context: Context) {
          */
         private const val AUDIO_QUALITY = "0"
 
-        /** Fragmentos baixados em paralelo quando a origem é segmentada. */
-        private const val CONCURRENT_FRAGMENTS = 8
+        // ------------------------------------------------------------------
+        // Ajustes de desempenho
+        //
+        // Alterne UM por vez e compare com os números do Logcat (tag
+        // "DownloadTiming"). Estes dois foram mudados sem medição na primeira
+        // tentativa e o tempo piorou (0:58 -> 1:14), por isso voltaram ao
+        // comportamento original.
+        // ------------------------------------------------------------------
+
+        /** Fragmentos baixados em paralelo quando a origem é segmentada (DASH/HLS). */
+        private const val CONCURRENT_FRAGMENTS = 4
+
+        /**
+         * Prioriza a estratégia de extração que funcionou por último neste site.
+         *
+         * Só ligue depois de comparar os tempos: se o cliente "vencedor" for mais
+         * lento que os caminhos primários, isto aumenta o tempo de download.
+         */
+        private const val PREFER_REMEMBERED_ATTEMPT = false
+
+        /** Tag do Logcat com os tempos de cada etapa de um download. */
+        const val TIMING_TAG = "DownloadTiming"
+
+        /** Linhas como "[ExtractAudio] Destination: ..." marcam o início de um pós-processador. */
+        private val POST_PROCESSOR_PATTERN = Regex("""^\[([A-Za-z]+)]\s""")
     }
 }
 

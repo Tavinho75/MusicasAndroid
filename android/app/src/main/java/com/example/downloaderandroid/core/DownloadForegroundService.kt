@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.yausername.youtubedl_android.YoutubeDL
 import com.example.downloaderandroid.DownloadHistoryActivity
@@ -110,6 +112,7 @@ class DownloadForegroundService : Service() {
     private suspend fun runDownload(url: String, taskId: String, startId: Int, resumeExisting: Boolean = false) {
         var handledByQueue = false
         var cancelRequested = false
+        val flowStartedAt = SystemClock.elapsedRealtime()
         try {
             if (resumeExisting) {
                 repository.current()?.let { state ->
@@ -213,6 +216,11 @@ class DownloadForegroundService : Service() {
                 if (!failedTitle.isNullOrBlank()) failedTitle + " — " + detail else detail,
             )
         } finally {
+            Log.i(
+                YtDlpDownloadEngine.TIMING_TAG,
+                "fluxoCompleto=${SystemClock.elapsedRealtime() - flowStartedAt}ms cancelado=$cancelRequested",
+            )
+
             if (activeStartId == startId && activeTaskId == taskId) {
                 activeDownloadJob = null
                 if (!cancelRequested) {
