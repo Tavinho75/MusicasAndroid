@@ -36,6 +36,21 @@ class YtDlpDownloadEngine(context: Context) {
         val requiresCookies: Boolean = false,
     )
 
+    suspend fun resolveTitle(url: String): String? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                SealCompatibleDownloaderBackend.init(appContext)
+                SealCompatibleDownloaderBackend.ensureYtDlpUpdated(appContext)
+
+                val request = YoutubeDLRequest(url)
+                    .addOption("--no-playlist")
+                if (cookieStore.hasCookies()) {
+                    request.addOption("--cookies", cookieStore.cookieFile.absolutePath)
+                }
+                YoutubeDL.getInstance().getInfo(request).title?.trim()?.takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+
     suspend fun downloadBestAudio(
         url: String,
         taskId: String,
@@ -188,12 +203,20 @@ class YtDlpDownloadEngine(context: Context) {
                     }
                 }
 
+                val errorSummary = errors.asSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() && !it.startsWith("YouTube ") }
+                    .firstOrNull { it.contains("ERROR:", ignoreCase = true) }
+                    ?.substringAfter("ERROR:", "")
+                    ?.trim()
+                    ?: errors.lastOrNull()?.trim()
+                    ?: "Erro não identificado pelo yt-dlp."
+
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
                     outputDirectory = temporaryDirectory.absolutePath,
-                    message = buildString {
-                        append("Nenhuma tentativa conseguiu baixar o áudio.")
+                    message = "Falha no download: $errorSummary"
                         if (errors.isNotEmpty()) {
                             append("\n\nTentativas:\n")
                             append(errors.joinToString("\n"))
