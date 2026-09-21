@@ -3,8 +3,6 @@ package com.example.downloaderandroid
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -41,11 +39,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import com.example.downloaderandroid.auth.YouTubeAuthActivity
 import com.example.downloaderandroid.core.DownloadForegroundService
+import com.example.downloaderandroid.core.DownloadProcessRegistry
 import com.example.downloaderandroid.core.ExtractorProbeResult
+import com.example.downloaderandroid.core.SealCompatibleDownloaderBackend
 import com.example.downloaderandroid.core.YtDlpExtractorEngine
 import com.example.downloaderandroid.state.DownloadQueueStore
 import com.example.downloaderandroid.state.DownloadTaskStatus
@@ -56,7 +54,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -64,6 +61,21 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val PHASE2_RESTART_CHECKPOINT_ID =
             "phase2-restart-persistence-checkpoint"
+
+        /** Estados em que um download está em andamento do ponto de vista do usuário. */
+        private val ACTIVE_DOWNLOAD_STATUSES = setOf(
+            DownloadTaskStatus.DRAFT,
+            DownloadTaskStatus.ANALYZING,
+            DownloadTaskStatus.READY,
+            DownloadTaskStatus.DOWNLOADING,
+            DownloadTaskStatus.PROCESSING,
+        )
+
+        /**
+         * Tempo sem nenhuma atualização de estado e sem processo do yt-dlp ativo
+         * a partir do qual o download é considerado interrompido pelo sistema.
+         */
+        private const val ORPHAN_TIMEOUT_MILLIS = 60_000L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,10 +84,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DownloaderAndroidTheme {
-                var preflightStatus by mutableStateOf("Executando testes da FASE 1.1…")
+                var preflightStatus by mutableStateOf(
+                    if (BuildConfig.DEBUG) "Executando testes da FASE 1.1…" else ""
+                )
                 var urlInput by mutableStateOf("")
                 var bulkMode by mutableStateOf(false)
-                var phase3Status by mutableStateOf("FASE 4.1 pronta para download em segundo plano.")
+                var phase3Status by mutableStateOf("Pronto para download em segundo plano.")
                 var phase3Logs by mutableStateOf("")
                 var showLogs by mutableStateOf(false)
                 var isDownloading by mutableStateOf(false)
@@ -92,10 +106,10 @@ class MainActivity : ComponentActivity() {
                     if (requestedUrl != null) {
                         scope.launch {
                             if (granted) {
-                                phase3Status = "🔄 FASE 4.1: permissão concedida; iniciando serviço…"
+                                phase3Status = "🔄 Permissão concedida; iniciando serviço…"
                                 phase3Logs = "Permissão de notificações concedida.\nIniciando Foreground Service."
                             } else {
-                                phase3Status = "⚠️ FASE 4.1: notificações não autorizadas; iniciando download mesmo assim."
+                                phase3Status = "⚠️ Notificações não autorizadas; iniciando download mesmo assim."
                                 phase3Logs = "POST_NOTIFICATIONS não foi concedida. O download continuará, mas a notificação pode ficar oculta."
                             }
                             val result = startBackgroundDownload(requestedUrl)
@@ -220,10 +234,11 @@ class MainActivity : ComponentActivity() {
 
                         OutlinedTextField(
                             value = urlInput,
-                            onValueChange = { urlInput = it },
+                            onValueChange = { newValue: String -> urlInput = newValue },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 8.dp),
+                                .padding(top = 8.dp)
+                                .height(if (bulkMode) 180.dp else 56.dp),
                             label = {
                                 Text(
                                     if (bulkMode) {
@@ -231,17 +246,11 @@ class MainActivity : ComponentActivity() {
                                     } else {
                                         "Cole o link de uma música ou vídeo"
                                     }
-                                },
-                            },
-                            supportingText = {
-                                if (bulkMode) {
-                                    Text("Cada linha será tratada como um download separado.")
-                                }
+                                )
                             },
                             singleLine = !bulkMode,
-                            minLines = if (bulkMode) 6 else 1,
                             maxLines = if (bulkMode) 12 else 1,
-                            enabled = true
+                            minLines = if (bulkMode) 6 else 1,
                         )
 
                         if (isDownloading || queueCount > 0) {
@@ -271,16 +280,16 @@ class MainActivity : ComponentActivity() {
 
                                 if (requestedUrls.isEmpty()) {
                                     phase3Status = if (bulkMode) {
-                                        "❌ FASE 4.1: cole pelo menos uma URL, uma por linha."
+                                        "❌ Cole pelo menos uma URL, uma por linha."
                                     } else {
-                                        "❌ FASE 4.1: cole uma URL antes de iniciar."
+                                        "❌ Cole uma URL antes de iniciar."
                                     }
                                     phase3Logs = phase3Status
                                     return@Button
                                 }
 
                                 scope.launch {
-                                    phase3Status = "🔄 FASE 4.1: preparando " + requestedUrls.size + " download(s)…"
+                                    phase3Status = "🔄 Preparando " + requestedUrls.size + " download(s)…"
                                     phase3Logs = phase3Status
 
                                     val queueStore = DownloadQueueStore(applicationContext)
@@ -289,22 +298,19 @@ class MainActivity : ComponentActivity() {
                                         NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
                                     ).current()
 
-                                    val active = activeNow?.status in setOf(
-                                        DownloadTaskStatus.DRAFT,
-                                        DownloadTaskStatus.ANALYZING,
-                                        DownloadTaskStatus.READY,
-                                        DownloadTaskStatus.DOWNLOADING,
-                                        DownloadTaskStatus.PROCESSING,
-                                    )
+                                     // Um estado órfão não conta como download ativo:
+                                     // nesse caso o novo link inicia normalmente.
+                                     val active = activeNow?.status in ACTIVE_DOWNLOAD_STATUSES &&
+                                         !isOrphanDownload(activeNow)
 
-                                    if (active) {
+                                     if (active) {
                                         var addedCount = 0
                                         requestedUrls.forEach { requestedUrl ->
                                             if (queueStore.add(requestedUrl) != null) {
                                                 addedCount++
                                             }
                                         }
-                                        queueCount = queueStore.list().size
+                                        queueCount = queueStore.pending().size
                                         phase3Status = if (addedCount > 0) {
                                             "➕ " + addedCount + " download(s) adicionado(s) à fila."
                                         } else {
@@ -323,7 +329,7 @@ class MainActivity : ComponentActivity() {
                                             queuedCount++
                                         }
                                     }
-                                    queueCount = queueStore.list().size
+                                    queueCount = queueStore.pending().size
 
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                                         ContextCompat.checkSelfPermission(
@@ -343,7 +349,7 @@ class MainActivity : ComponentActivity() {
                                         phase3Status = if (requestedUrls.size > 1) {
                                             "🔄 Iniciando primeiro download; " + queuedCount + " na fila…"
                                         } else {
-                                            "🔄 FASE 4.1: iniciando serviço em segundo plano…"
+                                            "🔄 Iniciando serviço em segundo plano…"
                                         }
                                         val result = startBackgroundDownload(firstUrl)
                                         phase3Status = result
@@ -395,9 +401,25 @@ class MainActivity : ComponentActivity() {
                         NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
                     )
 
+                    // Um download cujo processo morreu (encerrado pelo sistema) não
+                    // pode deixar o aplicativo preso em "download em andamento",
+                    // recusando novos downloads indefinidamente. Só consideramos
+                    // órfão quando não existe nenhum processo ativo E o estado
+                    // parou de ser atualizado: um download real atualiza o estado
+                    // a cada segundo.
                     while (true) {
                         val active = activeRepository.current()
-                        queueCount = DownloadQueueStore(applicationContext).list().size
+                        queueCount = DownloadQueueStore(applicationContext).pending().size
+
+                        if (isOrphanDownload(active)) {
+                            runCatching {
+                                activeRepository.transition(
+                                    DownloadTaskStatus.FAILED,
+                                    detail = "Download interrompido pelo sistema; nenhum processo ativo.",
+                                )
+                            }
+                        }
+
                         when (active?.status) {
                             DownloadTaskStatus.DRAFT,
                             DownloadTaskStatus.ANALYZING,
@@ -406,27 +428,27 @@ class MainActivity : ComponentActivity() {
                             DownloadTaskStatus.PROCESSING -> {
                                 isDownloading = true
                                 val detail = active.detail ?: "download em segundo plano…"
-                                phase3Status = "🔄 FASE 4.1: $detail"
+                                phase3Status = "🔄 $detail"
                                 phase3Logs = detail
                             }
 
                             DownloadTaskStatus.COMPLETED -> {
                                 isDownloading = false
                                 val detail = active.detail ?: "Música salva na pasta Music/MusicasAndroid."
-                                phase3Status = "✅ FASE 4.1: download concluído\n\n$detail"
+                                phase3Status = "✅ Download concluído\n\n$detail"
                                 phase3Logs = detail
                             }
 
                             DownloadTaskStatus.FAILED -> {
                                 isDownloading = false
                                 val detail = active.detail ?: "Falha sem detalhes."
-                                phase3Status = "❌ FASE 4.1: download falhou"
+                                phase3Status = "❌ Download falhou"
                                 phase3Logs = detail
                             }
 
                             DownloadTaskStatus.CANCELLED -> {
                                 isDownloading = false
-                                phase3Status = "⚠️ FASE 4.1: download cancelado."
+                                phase3Status = "⚠️ Download cancelado."
                                 phase3Logs = "Download cancelado."
                             }
 
@@ -438,7 +460,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                LaunchedEffect("backend-warmup") {
+                    // Desempacota os binários nativos fora do caminho do usuário:
+                    // a primeira música do dia não paga essa inicialização.
+                    withContext(Dispatchers.IO) {
+                        SealCompatibleDownloaderBackend.warmUp(applicationContext)
+                    }
+                }
+
                 LaunchedEffect("preflight") {
+                    // O arnês de validação das fases roda somente em compilações de
+                    // desenvolvimento. Em release ele executava ffmpeg, gerava um
+                    // WAV de teste e escrevia no estado de downloads a cada abertura.
+                    if (!BuildConfig.DEBUG) return@LaunchedEffect
+
                     val phase11 = runPhase11Tests()
 
                     preflightStatus = if (phase11.startsWith("❌")) {
@@ -468,12 +503,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Indica que o estado persistido representa um download que já não existe:
+     * nenhum processo do yt-dlp ativo e nenhuma atualização de progresso recente.
+     */
+    private fun isOrphanDownload(state: DownloadTaskState?): Boolean {
+        if (state == null || state.status !in ACTIVE_DOWNLOAD_STATUSES) return false
+        if (DownloadProcessRegistry.hasActiveProcesses()) return false
+        return System.currentTimeMillis() - state.updatedAtEpochMillis > ORPHAN_TIMEOUT_MILLIS
+    }
+
     private suspend fun startBackgroundDownload(url: String): String {
         val parsed = runCatching { Uri.parse(url) }.getOrNull()
         val scheme = parsed?.scheme?.lowercase()
 
         if (scheme != "http" && scheme != "https") {
-            return "❌ FASE 4.1: informe uma URL HTTP ou HTTPS válida."
+            return "❌ Informe uma URL HTTP ou HTTPS válida."
         }
 
         val activeRepository = NativeDownloadTaskRepository(
@@ -482,14 +527,9 @@ class MainActivity : ComponentActivity() {
         )
         val current = activeRepository.current()
 
-        if (current?.status in setOf(
-                DownloadTaskStatus.DRAFT,
-                DownloadTaskStatus.ANALYZING,
-                DownloadTaskStatus.READY,
-                DownloadTaskStatus.DOWNLOADING,
-                DownloadTaskStatus.PROCESSING,
-            )
-        ) {
+        // Um estado órfão (processo morto pelo sistema) não pode bloquear um novo
+        // download: nesse caso seguimos em frente e o serviço sobrescreve o estado.
+        if (current?.status in ACTIVE_DOWNLOAD_STATUSES && !isOrphanDownload(current)) {
             return "🔄 Já existe um download em andamento. Acompanhe-o pela notificação do MusicasAndroid."
         }
 
@@ -500,27 +540,29 @@ class MainActivity : ComponentActivity() {
                 url = url,
                 taskId = taskId,
             )
-            "🔄 FASE 4.1: download iniciado em segundo plano.\n\nVocê pode sair do aplicativo; o download continuará pelo serviço em primeiro plano.\n\nUma notificação será exibida durante a operação."
+            "🔄 Download iniciado em segundo plano.\n\nVocê pode sair do aplicativo; o download continuará pelo serviço em primeiro plano.\n\nUma notificação será exibida durante a operação."
         } catch (error: Throwable) {
             Log.e("Phase4Background", "Não foi possível iniciar o serviço", error)
-            "❌ FASE 4.1: ${error.javaClass.simpleName}: ${error.message ?: "falha ao iniciar o serviço"}"
+            "❌ ${error.javaClass.simpleName}: ${error.message ?: "falha ao iniciar o serviço"}"
         }
     }
 
     private suspend fun runPhase11Tests(): String {
+        // A validação de conversão WAV -> MP3 usava o FFmpegKit, que foi removido
+        // do projeto (era um segundo build completo de FFmpeg embarcado apenas
+        // para o teste). O fluxo real converte com o FFmpeg do youtubedl-android.
         val extractorResult: ExtractorProbeResult = try {
             YtDlpExtractorEngine(applicationContext).probe("https://example.com/")
         } catch (error: Throwable) {
             Log.e("Phase1Probe", "Falha no ExtractorEngine", error)
             ExtractorProbeResult(false, "Falha inesperada: ${error.javaClass.simpleName}: ${error.message}")
         }
+
         if (!extractorResult.initialized) return "❌ ExtractorEngine falhou\n\n${extractorResult.message}"
-        return try {
-            withContext(Dispatchers.Default) { runFfmpegValidation() }
-        } catch (error: Throwable) {
-            Log.e("Phase1FFmpeg", "Falha fatal durante os testes do FFmpeg", error)
-            "❌ ExtractorEngine OK\n\n❌ FFmpeg FALHOU AO EXECUTAR\n\n${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}\n\nTag do Logcat: Phase1FFmpeg"
-        }
+
+        return "✅ ExtractorEngine OK\n\n" +
+            "Backend yt-dlp inicializado com sucesso.\n" +
+            "Conversão de áudio é feita pelo FFmpeg do youtubedl-android."
     }
 
     private fun runPhase2NativeStateValidation(): String {
@@ -574,50 +616,5 @@ class MainActivity : ComponentActivity() {
             Log.e("Phase2Restart", "Falha no teste de persistência após reinício", error)
             "❌ FASE 2: ${error.javaClass.simpleName}: ${error.message ?: "sem mensagem"}"
         }
-    }
-
-    private fun runFfmpegValidation(): String {
-        val encoderSession = FFmpegKit.execute("-hide_banner -encoders")
-        val encoderOutput = encoderSession.output ?: ""
-        if (!ReturnCode.isSuccess(encoderSession.returnCode)) return "❌ ExtractorEngine OK\n\n❌ FFmpeg retornou erro ao listar encoders.\n\nVeja o Logcat."
-        if (!encoderOutput.contains("libmp3lame", ignoreCase = true)) return "⚠️ ExtractorEngine OK\n\n⚠️ FFmpeg executado\n\n❌ libmp3lame NÃO encontrado"
-        val testDirectory = File(cacheDir, "phase11-media-test").apply { mkdirs() }
-        val wavFile = File(testDirectory, "input-test.wav")
-        val mp3File = File(testDirectory, "output-test.mp3")
-        wavFile.delete(); mp3File.delete()
-        val wavSession = FFmpegKit.execute("-hide_banner -y -f lavfi -i sine=frequency=440:sample_rate=44100:duration=2 -c:a pcm_s16le \"${wavFile.absolutePath}\"")
-        if (!ReturnCode.isSuccess(wavSession.returnCode) || !wavFile.exists() || wavFile.length() <= 0L) return "❌ ExtractorEngine OK\n\n✅ libmp3lame encontrado\n\n❌ Falha ao gerar arquivo de áudio de teste"
-        val mp3Session = FFmpegKit.execute("-hide_banner -y -i \"${wavFile.absolutePath}\" -c:a libmp3lame -b:a 192k \"${mp3File.absolutePath}\"")
-        if (!ReturnCode.isSuccess(mp3Session.returnCode)) return "❌ ExtractorEngine OK\n\n✅ libmp3lame encontrado\n\n❌ Conversão WAV → MP3 falhou"
-        val fileExists = mp3File.exists()
-        val fileSize = if (fileExists) mp3File.length() else 0L
-        val formatValid = validateMp3Format(mp3File)
-        val playbackValid = validateMp3Playback(mp3File)
-        return if (fileExists && fileSize > 0 && mp3File.extension.equals("mp3", true) && formatValid && playbackValid) "✅ ExtractorEngine OK\n\n✅ FFmpeg executado\n\n✅ libmp3lame ENCONTRADO\n\n✅ WAV → MP3 convertido\n\n✅ MP3 válido e reproduzível\n\nTamanho: $fileSize bytes" else "⚠️ Conversão executada, mas validação incompleta\n\nArquivo existe: $fileExists\nTamanho: $fileSize bytes\nFormato válido: $formatValid\nReprodução válida: $playbackValid"
-    }
-
-    private fun validateMp3Format(file: File): Boolean {
-        var retriever: MediaMetadataRetriever? = null
-        return try {
-            retriever = MediaMetadataRetriever()
-            retriever.setDataSource(file.absolutePath)
-            val mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE).orEmpty()
-            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            mime.contains("audio", true) && duration > 0
-        } catch (error: Throwable) {
-            Log.e("Phase1MP3", "Formato MP3 inválido", error); false
-        } finally { runCatching { retriever?.release() } }
-    }
-
-    private fun validateMp3Playback(file: File): Boolean {
-        var player: MediaPlayer? = null
-        return try {
-            player = MediaPlayer()
-            player.setDataSource(file.absolutePath)
-            player.prepare()
-            player.duration > 0
-        } catch (error: Throwable) {
-            Log.e("Phase1MP3", "MP3 não pôde ser preparado para reprodução", error); false
-        } finally { runCatching { player?.release() } }
     }
 }

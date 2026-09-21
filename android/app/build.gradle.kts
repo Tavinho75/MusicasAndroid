@@ -44,12 +44,31 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     buildFeatures {
         compose = true
+        // Necessário para BuildConfig.DEBUG, que desliga o arnês de testes das
+        // fases em compilações de release.
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests {
+            // Permite testar classes que apenas tocam em APIs do Android
+            // (ex.: android.util.Log) sem um dispositivo.
+            isReturnDefaultValues = true
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        // Precisa acompanhar o compileOptions acima: sem isso o build falha com
+        // "Inconsistent JVM-target compatibility".
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -61,18 +80,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
 
     // Update from the older Seal-matched release: 0.18.1 adds QuickJS,
     // which is required by current yt-dlp YouTube signature extraction.
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")
-
-    // Keep the already validated FFmpegKit dependency for the existing
-    // Phase 1.1 WAV -> MP3 validation path.
-    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.7")
-    implementation("com.arthenica:smart-exception-java:0.2.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
