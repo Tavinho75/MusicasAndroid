@@ -29,6 +29,12 @@ class NativeDownloadTaskRepository(
 
     fun current(): DownloadTaskState? = store.load()
 
+    /** Persists the current task after metadata or file information changes. */
+    fun save(state: DownloadTaskState): DownloadTaskState {
+        store.save(state)
+        return state
+    }
+
     fun transition(
         target: DownloadTaskStatus,
         detail: String? = current()?.detail,
