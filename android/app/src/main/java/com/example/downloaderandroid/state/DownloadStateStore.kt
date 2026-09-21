@@ -47,6 +47,9 @@ class DownloadStateStore(
             .put("progressPercent", progressPercent)
             .put("etaSeconds", etaSeconds)
             .put("updatedAtEpochMillis", updatedAtEpochMillis)
+            .put("startedAtEpochMillis", startedAtEpochMillis)
+            .put("fileSizeBytes", fileSizeBytes)
+            .put("folder", folder)
 
     private fun String.toDownloadTaskState(): DownloadTaskState {
         val json = JSONObject(this)
@@ -60,6 +63,9 @@ class DownloadStateStore(
             progressPercent = if (json.isNull("progressPercent")) null else json.optDouble("progressPercent").toFloat(),
             etaSeconds = if (json.isNull("etaSeconds")) null else json.optLong("etaSeconds"),
             updatedAtEpochMillis = json.getLong("updatedAtEpochMillis"),
+            startedAtEpochMillis = json.optLong("startedAtEpochMillis", System.currentTimeMillis()),
+            fileSizeBytes = json.optLong("fileSizeBytes", 0L),
+            folder = json.optString("folder").takeIf { it.isNotBlank() },
         )
     }
 
