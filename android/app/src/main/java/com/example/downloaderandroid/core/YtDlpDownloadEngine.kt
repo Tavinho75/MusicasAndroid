@@ -212,20 +212,26 @@ class YtDlpDownloadEngine(context: Context) {
                     ?: errors.lastOrNull()?.trim()
                     ?: "Erro não identificado pelo yt-dlp."
 
+                val failureMessage = buildString {
+                    append("Falha no download: ")
+                    append(errorSummary)
+
+                    if (errors.isNotEmpty()) {
+                        append("\n\nTentativas:\n")
+                        append(errors.joinToString("\n"))
+                    }
+
+                    if (!hasCookies && had403) {
+                        append("\n\nO YouTube bloqueou os streams públicos com HTTP 403.")
+                        append("\nFaça login em ‘Entrar no YouTube’, salve os cookies e tente novamente.")
+                    }
+                }
+
                 DownloadExecutionResult(
                     success = false,
                     exitCode = -1,
                     outputDirectory = temporaryDirectory.absolutePath,
-                    message = "Falha no download: $errorSummary"
-                        if (errors.isNotEmpty()) {
-                            append("\n\nTentativas:\n")
-                            append(errors.joinToString("\n"))
-                        }
-                        if (!hasCookies && had403) {
-                            append("\n\nO YouTube bloqueou os streams públicos com HTTP 403.")
-                            append("\nFaça login em ‘Entrar no YouTube’, salve os cookies e tente novamente.")
-                        }
-                    },
+                    message = failureMessage,
                 )
             } catch (error: Throwable) {
                 DownloadExecutionResult(
