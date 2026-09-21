@@ -220,22 +220,23 @@ class MainActivity : ComponentActivity() {
 
                         OutlinedTextField(
                             value = urlInput,
-                            onValueChange = { urlInput = it },
+                            onValueChange = { newValue: String -> urlInput = newValue },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 8.dp),
+                                .padding(top = 8.dp)
+                                .height(if (bulkMode) 180.dp else 56.dp),
                             label = {
                                 Text(
-                                    text = if (bulkMode) {
+                                    if (bulkMode) {
                                         "Cole um link por linha"
                                     } else {
                                         "Cole o link de uma música ou vídeo"
                                     }
-                                },
+                                )
                             },
                             singleLine = !bulkMode,
-                            minLines = if (bulkMode) 6 else 1,
                             maxLines = if (bulkMode) 12 else 1,
+                            minLines = if (bulkMode) 6 else 1,
                         )
 
                         if (isDownloading || queueCount > 0) {
