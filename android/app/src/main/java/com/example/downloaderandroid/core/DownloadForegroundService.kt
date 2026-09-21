@@ -111,11 +111,28 @@ class DownloadForegroundService : Service() {
             }
             repository.transition(DownloadTaskStatus.ANALYZING, detail = "Preparando yt-dlp em segundo plano.")
             updateNotification("Analisando link…", null, null)
+            val engine = YtDlpDownloadEngine(applicationContext)
+            val resolvedTitle = engine.resolveTitle(url)
+            if (!resolvedTitle.isNullOrBlank()) {
+                repository.current()?.let { state ->
+                    repository.save(
+                        state.copy(
+                            title = resolvedTitle,
+                            detail = "Música identificada; preparando download.",
+                        )
+                    )
+                }
+            }
+
             repository.transition(DownloadTaskStatus.READY, detail = "Motor pronto para iniciar o download.")
             repository.transition(DownloadTaskStatus.DOWNLOADING, detail = "Download em segundo plano.")
-            updateNotification("Baixando áudio…", null, null)
+            updateNotification(
+                if (!resolvedTitle.isNullOrBlank()) "Baixando: " + resolvedTitle else "Baixando áudio…",
+                null,
+                null,
+            )
 
-            val result = YtDlpDownloadEngine(applicationContext).downloadBestAudio(url, taskId) { progress, etaSeconds, line ->
+            val result = engine.downloadBestAudio(url, taskId) { progress, etaSeconds, line ->
                 val safeProgress = progress.coerceIn(0f, 100f)
                 val progressText = formatProgress(safeProgress, etaSeconds)
                 runCatching { repository.updateProgress(safeProgress, etaSeconds, line.trim().takeIf { it.isNotBlank() } ?: progressText) }
@@ -130,7 +147,7 @@ class DownloadForegroundService : Service() {
                     fileSizeBytes = result.fileSizeBytes,
                     folder = result.folder,
                 )
-                repository.create(finalState)
+                repository.save(finalState)
                 historyStore.add(finalState)
             } else {
                 val failedState = repository.transition(DownloadTaskStatus.FAILED, detail = result.message)
@@ -146,7 +163,8 @@ class DownloadForegroundService : Service() {
                     historyStore.add(repository.transition(DownloadTaskStatus.FAILED, detail = detail))
                 }
             }
-            showFinishedNotification("Download falhou", detail)
+            val failedTitle = repository.current()?.title
+            showFinishedNotification("Download falhou", if (!failedTitle.isNullOrBlank()) failedTitle + " — " + detail else detail)
         } finally {
             if (activeStartId == startId) {
                 activeDownloadJob = null
