@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +29,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -72,6 +74,7 @@ class MainActivity : ComponentActivity() {
             DownloaderAndroidTheme {
                 var preflightStatus by mutableStateOf("Executando testes da FASE 1.1…")
                 var urlInput by mutableStateOf("")
+                var bulkMode by mutableStateOf(false)
                 var phase3Status by mutableStateOf("FASE 4.1 pronta para download em segundo plano.")
                 var phase3Logs by mutableStateOf("")
                 var showLogs by mutableStateOf(false)
@@ -198,14 +201,46 @@ class MainActivity : ComponentActivity() {
                             textAlign = TextAlign.Center
                         )
 
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Downloads em massa",
+                                modifier = Modifier.weight(1f),
+                            )
+                            Switch(
+                                checked = bulkMode,
+                                onCheckedChange = { bulkMode = it },
+                            )
+                        }
+
                         OutlinedTextField(
                             value = urlInput,
                             onValueChange = { urlInput = it },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 16.dp),
-                            label = { Text("Cole o link de uma música ou vídeo") },
-                            singleLine = true,
+                                .padding(top = 8.dp),
+                            label = {
+                                Text(
+                                    if (bulkMode) {
+                                        "Cole um link por linha"
+                                    } else {
+                                        "Cole o link de uma música ou vídeo"
+                                    }
+                                },
+                            },
+                            supportingText = {
+                                if (bulkMode) {
+                                    Text("Cada linha será tratada como um download separado.")
+                                }
+                            },
+                            singleLine = !bulkMode,
+                            minLines = if (bulkMode) 6 else 1,
+                            maxLines = if (bulkMode) 12 else 1,
                             enabled = true
                         )
 
@@ -223,16 +258,29 @@ class MainActivity : ComponentActivity() {
 
                         Button(
                             onClick = {
-                                val requestedUrl = urlInput.trim()
+                                val requestedUrls = if (bulkMode) {
+                                    urlInput
+                                        .lineSequence()
+                                        .map { it.trim() }
+                                        .filter { it.isNotBlank() }
+                                        .distinct()
+                                        .toList()
+                                } else {
+                                    listOf(urlInput.trim()).filter { it.isNotBlank() }
+                                }
 
-                                if (requestedUrl.isBlank()) {
-                                    phase3Status = "❌ FASE 4.1: cole uma URL antes de iniciar."
+                                if (requestedUrls.isEmpty()) {
+                                    phase3Status = if (bulkMode) {
+                                        "❌ FASE 4.1: cole pelo menos uma URL, uma por linha."
+                                    } else {
+                                        "❌ FASE 4.1: cole uma URL antes de iniciar."
+                                    }
                                     phase3Logs = phase3Status
                                     return@Button
                                 }
 
                                 scope.launch {
-                                    phase3Status = "🔄 FASE 4.1: verificando permissão de notificações…"
+                                    phase3Status = "🔄 FASE 4.1: preparando " + requestedUrls.size + " download(s)…"
                                     phase3Logs = phase3Status
 
                                     val queueStore = DownloadQueueStore(applicationContext)
@@ -241,24 +289,41 @@ class MainActivity : ComponentActivity() {
                                         NativeDownloadTaskRepository.ACTIVE_DOWNLOAD_PREFERENCES_NAME,
                                     ).current()
 
-                                    if (activeNow?.status in setOf(
-                                            DownloadTaskStatus.DRAFT,
-                                            DownloadTaskStatus.ANALYZING,
-                                            DownloadTaskStatus.READY,
-                                            DownloadTaskStatus.DOWNLOADING,
-                                            DownloadTaskStatus.PROCESSING,
-                                        )) {
-                                        val added = queueStore.add(requestedUrl)
-                                        if (added == null) {
-                                            phase3Status = "⚠️ Esse link já está na fila."
-                                            phase3Logs = phase3Status
-                                        } else {
-                                            queueCount = queueStore.list().size
-                                            phase3Status = "➕ Adicionado à fila. Posição: $queueCount"
-                                            phase3Logs = "O download atual continuará normalmente; este link será processado automaticamente depois."
+                                    val active = activeNow?.status in setOf(
+                                        DownloadTaskStatus.DRAFT,
+                                        DownloadTaskStatus.ANALYZING,
+                                        DownloadTaskStatus.READY,
+                                        DownloadTaskStatus.DOWNLOADING,
+                                        DownloadTaskStatus.PROCESSING,
+                                    )
+
+                                    if (active) {
+                                        var addedCount = 0
+                                        requestedUrls.forEach { requestedUrl ->
+                                            if (queueStore.add(requestedUrl) != null) {
+                                                addedCount++
+                                            }
                                         }
+                                        queueCount = queueStore.list().size
+                                        phase3Status = if (addedCount > 0) {
+                                            "➕ " + addedCount + " download(s) adicionado(s) à fila."
+                                        } else {
+                                            "⚠️ Nenhum link novo foi adicionado; eles já estavam na fila."
+                                        }
+                                        phase3Logs = "O download atual continuará normalmente e a fila será processada automaticamente."
                                         return@launch
                                     }
+
+                                    // Start the first link immediately and put the remaining
+                                    // links into the persistent FIFO queue.
+                                    val firstUrl = requestedUrls.first()
+                                    var queuedCount = 0
+                                    requestedUrls.drop(1).forEach { queuedUrl ->
+                                        if (queueStore.add(queuedUrl) != null) {
+                                            queuedCount++
+                                        }
+                                    }
+                                    queueCount = queueStore.list().size
 
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                                         ContextCompat.checkSelfPermission(
@@ -266,13 +331,21 @@ class MainActivity : ComponentActivity() {
                                             Manifest.permission.POST_NOTIFICATIONS,
                                         ) != PackageManager.PERMISSION_GRANTED
                                     ) {
-                                        pendingNotificationUrl = requestedUrl
-                                        phase3Status = "🔔 O Android vai pedir permissão para mostrar a notificação do download."
+                                        pendingNotificationUrl = firstUrl
+                                        phase3Status = if (requestedUrls.size > 1) {
+                                            "🔔 Primeiro download preparado; " + queuedCount + " aguardando na fila. O Android vai pedir permissão para a notificação."
+                                        } else {
+                                            "🔔 O Android vai pedir permissão para mostrar a notificação do download."
+                                        }
                                         phase3Logs = phase3Status
                                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                     } else {
-                                        phase3Status = "🔄 FASE 4.1: iniciando serviço em segundo plano…"
-                                        val result = startBackgroundDownload(requestedUrl)
+                                        phase3Status = if (requestedUrls.size > 1) {
+                                            "🔄 Iniciando primeiro download; " + queuedCount + " na fila…"
+                                        } else {
+                                            "🔄 FASE 4.1: iniciando serviço em segundo plano…"
+                                        }
+                                        val result = startBackgroundDownload(firstUrl)
                                         phase3Status = result
                                         phase3Logs = result
                                     }
@@ -281,7 +354,14 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(top = 12.dp),
                             enabled = true
                         ) {
-                            Text(if (isDownloading) "Adicionar à fila" else "Iniciar download")
+                            Text(
+                                when {
+                                    bulkMode && isDownloading -> "Adicionar downloads à fila"
+                                    bulkMode -> "Baixar links"
+                                    isDownloading -> "Adicionar à fila"
+                                    else -> "Iniciar download"
+                                }
+                            )
                         }
 
                         if (isDownloading) {
