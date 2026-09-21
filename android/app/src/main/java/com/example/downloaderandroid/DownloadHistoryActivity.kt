@@ -101,6 +101,11 @@ private fun HistoryItem(item: DownloadHistoryItem) {
         Text("Download $status:")
         Text("${item.title ?: "Download sem título"} - $elapsed")
         Text("${item.folder} - $size")
+        if (item.status == "FAILED" || item.status == "CANCELLED") {
+            item.detail?.let { detail ->
+                Text("Erro: " + detail.take(220))
+            }
+        }
     }
 }
 
