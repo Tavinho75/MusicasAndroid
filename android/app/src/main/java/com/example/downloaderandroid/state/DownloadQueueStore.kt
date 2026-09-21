@@ -5,7 +5,28 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-/** Persistent FIFO queue for URLs waiting to be downloaded. */
+/** Estado de um item dentro da fila persistente. */
+enum class DownloadQueueItemStatus {
+    /** Aguardando a vez. */
+    PENDING,
+
+    /**
+     * Retirado da fila e em execução.
+     *
+     * O item permanece na fila até o download terminar de fato: se o processo
+     * morrer no meio, a URL do usuário não é perdida.
+     */
+    IN_PROGRESS,
+}
+
+data class DownloadQueueItem(
+    val id: String,
+    val url: String,
+    val addedAtEpochMillis: Long,
+    val status: DownloadQueueItemStatus = DownloadQueueItemStatus.PENDING,
+)
+
+/** Fila FIFO persistente das URLs aguardando download. */
 class DownloadQueueStore(context: Context) {
     private val preferences =
         context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -25,6 +46,7 @@ class DownloadQueueStore(context: Context) {
                                 id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
                                 url = url,
                                 addedAtEpochMillis = item.optLong("addedAtEpochMillis", 0L),
+                                status = parseStatus(item.optString("status")),
                             )
                         )
                     }
@@ -32,6 +54,11 @@ class DownloadQueueStore(context: Context) {
             }
         }.getOrDefault(emptyList())
     }
+
+    /** Itens que ainda não começaram, na ordem de entrada. */
+    @Synchronized
+    fun pending(): List<DownloadQueueItem> =
+        list().filter { it.status == DownloadQueueItemStatus.PENDING }
 
     @Synchronized
     fun add(url: String): DownloadQueueItem? {
@@ -50,6 +77,14 @@ class DownloadQueueStore(context: Context) {
         return item
     }
 
+    /** Marca um item como em execução sem removê-lo da fila. */
+    @Synchronized
+    fun markInProgress(id: String) {
+        save(list().map { item ->
+            if (item.id == id) item.copy(status = DownloadQueueItemStatus.IN_PROGRESS) else item
+        })
+    }
+
     @Synchronized
     fun remove(id: String) {
         save(list().filterNot { it.id == id })
@@ -66,11 +101,16 @@ class DownloadQueueStore(context: Context) {
                     put("id", item.id)
                     put("url", item.url)
                     put("addedAtEpochMillis", item.addedAtEpochMillis)
+                    put("status", item.status.name)
                 }
             )
         }
         preferences.edit().putString(KEY_ITEMS, array.toString()).apply()
     }
+
+    private fun parseStatus(raw: String): DownloadQueueItemStatus =
+        runCatching { DownloadQueueItemStatus.valueOf(raw) }
+            .getOrDefault(DownloadQueueItemStatus.PENDING)
 
     companion object {
         private const val PREFERENCES_NAME = "downloader_download_queue"
@@ -78,9 +118,3 @@ class DownloadQueueStore(context: Context) {
         private const val MAX_ITEMS = 50
     }
 }
-
-data class DownloadQueueItem(
-    val id: String,
-    val url: String,
-    val addedAtEpochMillis: Long,
-)
